@@ -1,72 +1,56 @@
 #!/bin/sh
-# copilot-repl.sh — persistent interactive wrapper for the GitHub Copilot CLI
-# Keeps the PTY session alive; routes user input to `copilot suggest` / `copilot explain`
+# copilot-repl.sh -- persistent interactive wrapper for GitHub Copilot CLI
+# Keeps the PTY session alive between queries.
 
 clear
-printf "\033[1;32m"
-printf "  ██████╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗\n"
-printf " ██╔════╝██╔═══██╗██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝\n"
-printf " ██║     ██║   ██║██████╔╝██║██║     ██║   ██║   ██║   \n"
-printf " ██║     ██║   ██║██╔═══╝ ██║██║     ██║   ██║   ██║   \n"
-printf " ╚██████╗╚██████╔╝██║     ██║███████╗╚██████╔╝   ██║   \n"
-printf "  ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   \n"
-printf "\033[0m"
-printf "\n\033[1;37m  GitHub Copilot CLI  \033[2m— Home Assistant\033[0m\n\n"
-printf "\033[2m  Usage:\033[0m\n"
-printf "  \033[33mType any question\033[0m    → suggest a shell command\n"
-printf "  \033[33mexplain <command>\033[0m    → explain what a command does\n"
-printf "  \033[33mexit\033[0m                 → close this session\n"
-printf "\n\033[90m─────────────────────────────────────────────────────\033[0m\n\n"
+
+printf "\033[1;32m  GitHub Copilot CLI\033[0m  \033[2mHome Assistant\033[0m\n"
+printf "\033[90m  -----------------------------------------------\033[0m\n"
+printf "  \033[33mType a question\033[0m      suggest a shell command\n"
+printf "  \033[33mexplain <cmd>\033[0m        explain what a command does\n"
+printf "  \033[33mhelp\033[0m                 show this message\n"
+printf "  \033[33mexit\033[0m                 close session\n"
+printf "\033[90m  -----------------------------------------------\033[0m\n\n"
 
 # Verify the copilot binary is accessible
 if ! command -v copilot >/dev/null 2>&1; then
-    printf "\033[31m[error] copilot binary not found in PATH\033[0m\n"
-    printf "Check add-on logs. Waiting 10s and retrying…\n"
+    printf "\033[31m  [error] copilot not found in PATH.\033[0m\n"
+    printf "  Check add-on logs. Waiting 10s then retrying...\n\n"
     sleep 10
     exec "$0"
 fi
 
 while true; do
-    # Show prompt
-    printf "\033[1;36mcopilot\033[0m \033[90m›\033[0m "
+    printf "\033[1;36mcopilot\033[0m \033[90m>\033[0m "
 
-    # Read input (IFS= preserves leading/trailing spaces; -r no backslash interpret)
     IFS= read -r input
+    [ $? -ne 0 ] && printf "\n\033[90m  [bye]\033[0m\n" && exit 0
 
-    # EOF (Ctrl-D) → exit
-    [ $? -ne 0 ] && printf "\n\033[90m[bye]\033[0m\n" && break
-
-    # Trim leading/trailing whitespace
+    # Trim whitespace
     input="$(printf '%s' "$input" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-
-    # Skip empty lines
     [ -z "$input" ] && continue
 
-    # Built-in commands
     case "$input" in
         exit|quit|bye)
-            printf "\033[90m[session closed]\033[0m\n"
+            printf "\033[90m  [session closed]\033[0m\n"
             exit 0
             ;;
+        help|'?')
+            printf "\n  \033[33mType a question\033[0m      suggest a shell command\n"
+            printf "  \033[33mexplain <cmd>\033[0m        explain what a command does\n"
+            printf "  \033[33mexit\033[0m                 close session\n\n"
+            ;;
         explain\ *)
-            query="${input#explain }"
             printf "\n"
-            copilot explain "$query"
+            copilot explain "${input#explain }" 2>&1
             ;;
         suggest\ *)
-            query="${input#suggest }"
             printf "\n"
-            copilot suggest -s sh "$query"
-            ;;
-        help|'?')
-            printf "\n  \033[33mType any question\033[0m    → suggest a shell command\n"
-            printf "  \033[33mexplain <command>\033[0m    → explain what a command does\n"
-            printf "  \033[33mexit\033[0m                 → close this session\n\n"
+            copilot suggest -s sh "${input#suggest }" 2>&1
             ;;
         *)
-            # Default: treat as a question for copilot suggest
             printf "\n"
-            copilot suggest -s sh "$input"
+            copilot suggest -s sh "$input" 2>&1
             ;;
     esac
 

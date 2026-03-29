@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>GitHub Copilot ΓÇö Home Assistant</title>
+  <title>GitHub Copilot &mdash; Home Assistant</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
@@ -13,24 +13,33 @@
                  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
                  overflow: hidden; }
 
-    /* ΓöÇΓöÇ status bar ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
+    /* status bar */
     #status-bar {
-      position: fixed; top: 0; left: 0; right: 0; height: 30px; z-index: 20;
+      position: fixed; top: 0; left: 0; right: 0; height: 32px; z-index: 20;
       background: #161b22; border-bottom: 1px solid #30363d;
-      display: flex; align-items: center; gap: 8px; padding: 0 12px;
+      display: flex; align-items: center; gap: 8px; padding: 0 14px;
       font: 12px/1 'SF Mono', Consolas, monospace; color: #8b949e;
+      user-select: none;
     }
     #conn-dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: #da3633; flex-shrink: 0; transition: background .3s;
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      background: #da3633; transition: background .3s;
     }
     #conn-dot.online  { background: #3fb950; }
     #conn-dot.warning { background: #d29922; }
-    #status-user { margin-left: auto; color: #58a6ff; }
+    #conn-label { flex: 1; }
+    #status-user { color: #58a6ff; font-size: 11px; }
+    #btn-reconnect {
+      display: none; padding: 3px 10px; border-radius: 5px;
+      background: #21262d; border: 1px solid #30363d;
+      color: #c9d1d9; font-size: 11px; cursor: pointer;
+    }
+    #btn-reconnect:hover { background: #30363d; }
+    #btn-reconnect.visible { display: inline-block; }
 
-    /* ΓöÇΓöÇ auth overlay ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
+    /* auth overlay */
     #auth-overlay {
-      position: fixed; inset: 30px 0 0 0; z-index: 10;
+      position: fixed; inset: 32px 0 0 0; z-index: 10;
       background: #0d1117;
       display: flex; align-items: center; justify-content: center;
     }
@@ -38,11 +47,11 @@
 
     .auth-card {
       background: #161b22; border: 1px solid #30363d; border-radius: 12px;
-      padding: 32px 28px; max-width: 440px; width: 92%; text-align: center;
+      padding: 36px 32px; max-width: 440px; width: 92%; text-align: center;
     }
     .auth-card svg { color: #8b949e; }
     .auth-card h2 { margin: 16px 0 8px; font-size: 1.15rem; color: #f0f6fc; }
-    .auth-card p  { font-size: .875rem; color: #8b949e; line-height: 1.55; margin-bottom: 20px; }
+    .auth-card p  { font-size: .875rem; color: #8b949e; line-height: 1.6; margin-bottom: 20px; }
 
     .btn {
       display: inline-flex; align-items: center; gap: 8px;
@@ -50,17 +59,17 @@
       font-size: .875rem; font-weight: 600; transition: opacity .15s;
     }
     .btn:hover { opacity: .85; }
-    .btn-primary { background: #238636; color: #fff; }
+    .btn-primary   { background: #238636; color: #fff; }
     .btn-secondary { background: #21262d; color: #c9d1d9;
                      border: 1px solid #30363d; margin-top: 10px; }
 
-    /* device-code step */
     #device-step { display: none; }
     #device-step.visible { display: block; }
 
     .code-box {
       background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
-      padding: 14px; margin: 16px 0; font: 700 1.6rem/1 'SF Mono', Consolas, monospace;
+      padding: 14px; margin: 16px 0;
+      font: 700 1.6rem/1 'SF Mono', Consolas, monospace;
       color: #58a6ff; letter-spacing: .12em; cursor: pointer;
       user-select: all; transition: background .15s;
     }
@@ -78,12 +87,12 @@
     .status-msg.ok  { color: #3fb950; }
     .status-msg.err { color: #f85149; }
 
-    /* ΓöÇΓöÇ terminal ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
+    /* terminal */
     #terminal-wrap {
-      position: fixed; top: 30px; left: 0; right: 0; bottom: 0; z-index: 1;
+      position: fixed; top: 32px; left: 0; right: 0; bottom: 0; z-index: 1;
     }
     #terminal { width: 100%; height: 100%; }
-    .xterm { padding: 4px 8px; }
+    .xterm { padding: 6px 10px; }
   </style>
 </head>
 <body>
@@ -91,14 +100,14 @@
 <!-- status bar -->
 <div id="status-bar">
   <span id="conn-dot" class="warning"></span>
-  <span id="conn-label">Checking authΓÇª</span>
+  <span id="conn-label">Connecting&hellip;</span>
+  <button id="btn-reconnect" onclick="manualReconnect()">Reconnect</button>
   <span id="status-user"></span>
 </div>
 
-<!-- auth overlay (shown until gh is authenticated) -->
+<!-- auth overlay -->
 <div id="auth-overlay">
   <div class="auth-card">
-    <!-- GitHub octocat-ish mark -->
     <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58
                0-.28-.01-1.02-.01-2C6 21.37 5.28 19.26 5.28 19.26c-.55-1.38-1.34-1.75-1.34-1.75
@@ -114,10 +123,9 @@
     <p>Connect your GitHub account to use Copilot in Home Assistant.<br/>
        Your credentials are stored locally on your HA instance.</p>
 
-    <!-- step 1: initial button -->
     <div id="signin-step">
-      <button class="btn btn-primary" id="btn-signin" onclick="startAuth()">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+      <button class="btn btn-primary" onclick="startAuth()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58
                    0-.28-.01-1.02-.01-2C6 21.37 5.28 19.26 5.28 19.26c-.55-1.38-1.34-1.75-1.34-1.75
                    -1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1
@@ -132,21 +140,20 @@
       </button>
     </div>
 
-    <!-- step 2: device code + polling -->
     <div id="device-step">
       <p style="margin-bottom:8px">Open <strong>github.com/login/device</strong> and enter:</p>
-      <div class="code-box" id="device-code" onclick="copyCode(this)" title="Click to copy">┬╖┬╖┬╖┬╖-┬╖┬╖┬╖┬╖</div>
-      <p class="copy-hint">Click the code to copy it</p>
+      <div class="code-box" id="device-code" onclick="copyCode(this)" title="Click to copy">&middot;&middot;&middot;&middot;-&middot;&middot;&middot;&middot;</div>
+      <p class="copy-hint">Click to copy &middot; code expires in 15 min</p>
       <a id="device-url" href="https://github.com/login/device" target="_blank" rel="noopener"
-         class="btn btn-secondary">Open GitHub Device Auth Γåù</a>
+         class="btn btn-secondary">Open GitHub Device Auth &#x2197;</a>
       <div class="status-msg" id="poll-status">
-        <span class="spinner"></span>&nbsp;Waiting for authorizationΓÇª
+        <span class="spinner"></span>&nbsp;Waiting for authorization&hellip;
       </div>
     </div>
   </div>
 </div>
 
-<!-- xterm.js terminal (always mounted, hidden behind overlay until authed) -->
+<!-- xterm.js terminal -->
 <div id="terminal-wrap">
   <div id="terminal"></div>
 </div>
@@ -154,58 +161,74 @@
 <script>
 "use strict";
 (function () {
-  // ΓöÇΓöÇ base URL (strips ingress path prefix) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  const base   = window.location.href.replace(/\/$/, "");
-  const wsBase = base.replace(/^http/, "ws");
+  // -- Ingress-safe base URL --------------------------------------------------
+  // window.location.href can include query strings / hashes; use origin+pathname.
+  // HA ingress path looks like: /api/hassio_ingress/TOKEN[/...]
+  // We need to preserve that prefix for all fetch() and WebSocket calls.
+  const pathBase = (location.pathname).replace(/\/+$/, "") || "";
+  const httpBase = location.origin + pathBase;
+  const wsProto  = location.protocol === "https:" ? "wss:" : "ws:";
+  const wsBase   = wsProto + "//" + location.host + pathBase;
 
-  // ΓöÇΓöÇ DOM refs ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  const overlay     = document.getElementById("auth-overlay");
-  const signinStep  = document.getElementById("signin-step");
-  const deviceStep  = document.getElementById("device-step");
-  const deviceCode  = document.getElementById("device-code");
-  const deviceUrl   = document.getElementById("device-url");
-  const pollStatus  = document.getElementById("poll-status");
-  const connDot     = document.getElementById("conn-dot");
-  const connLabel   = document.getElementById("conn-label");
-  const statusUser  = document.getElementById("status-user");
+  // -- DOM refs ---------------------------------------------------------------
+  const overlay    = document.getElementById("auth-overlay");
+  const signinStep = document.getElementById("signin-step");
+  const deviceStep = document.getElementById("device-step");
+  const deviceCode = document.getElementById("device-code");
+  const deviceUrl  = document.getElementById("device-url");
+  const pollStatus = document.getElementById("poll-status");
+  const connDot    = document.getElementById("conn-dot");
+  const connLabel  = document.getElementById("conn-label");
+  const statusUser = document.getElementById("status-user");
+  const btnRecon   = document.getElementById("btn-reconnect");
 
   function setStatus(state, label, user) {
-    connDot.className = state;        // "online" | "warning" | ""
+    connDot.className     = state;
     connLabel.textContent = label;
     statusUser.textContent = user ? "@" + user : "";
   }
 
-  // ΓöÇΓöÇ xterm.js setup ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // -- xterm.js ---------------------------------------------------------------
   const term = new Terminal({
     theme: {
-      background: "#0d1117", foreground: "#c9d1d9",
-      cursor: "#58a6ff", selection: "rgba(88,166,255,.25)",
-      black: "#0d1117", red: "#ff7b72", green: "#3fb950",
-      yellow: "#d29922", blue: "#58a6ff", magenta: "#bc8cff",
-      cyan: "#39c5cf", white: "#b1bac4",
-      brightBlack: "#6e7681", brightRed: "#ffa198",
-      brightGreen: "#56d364", brightYellow: "#e3b341",
-      brightBlue: "#79c0ff", brightMagenta: "#d2a8ff",
-      brightCyan: "#56d4dd", brightWhite: "#f0f6fc",
+      background:    "#0d1117", foreground:    "#c9d1d9",
+      cursor:        "#58a6ff", selectionBackground: "rgba(88,166,255,.25)",
+      black:  "#0d1117",  red:     "#ff7b72", green:   "#3fb950", yellow: "#d29922",
+      blue:   "#58a6ff",  magenta: "#bc8cff", cyan:    "#39c5cf", white:  "#b1bac4",
+      brightBlack:   "#6e7681", brightRed:     "#ffa198",
+      brightGreen:   "#56d364", brightYellow:  "#e3b341",
+      brightBlue:    "#79c0ff", brightMagenta: "#d2a8ff",
+      brightCyan:    "#56d4dd", brightWhite:   "#f0f6fc",
     },
-    fontFamily: "'SF Mono','JetBrains Mono',Menlo,Consolas,monospace",
-    fontSize: 14, lineHeight: 1.4, cursorBlink: true,
-    scrollback: 5000, allowProposedApi: true,
+    fontFamily:   "'SF Mono','JetBrains Mono',Menlo,Consolas,monospace",
+    fontSize:     14,
+    lineHeight:   1.4,
+    cursorBlink:  true,
+    scrollback:   5000,
+    allowProposedApi: true,
+    convertEol:   false,
   });
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
   term.open(document.getElementById("terminal"));
-  fitAddon.fit();
 
-  // ΓöÇΓöÇ WebSocket state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  // -- WebSocket state --------------------------------------------------
-  let ws, reconnectTimer, reconnectDelay = 2000;
-  let sessionEnded = false;   // true when copilot exited cleanly
+  function fit() {
+    try { fitAddon.fit(); } catch (_) {}
+  }
+  fit();
+
+  // -- WebSocket bridge -------------------------------------------------------
+  let ws             = null;
+  let reconnectTimer = null;
+  let reconnectDelay = 2000;
+  let currentUser    = "";
+  let manualClose    = false;   // set true when user closes intentionally
 
   function connectTerminal() {
     clearTimeout(reconnectTimer);
-    sessionEnded = false;
-    setStatus("warning", "Connecting\u2026", "");
+    manualClose  = false;
+    btnRecon.classList.remove("visible");
+    setStatus("warning", "Connecting\u2026", currentUser);
 
     ws = new WebSocket(wsBase + "/ws");
     ws.binaryType = "arraybuffer";
@@ -213,6 +236,7 @@
     ws.onopen = () => {
       setStatus("online", "GitHub Copilot CLI", currentUser);
       reconnectDelay = 2000;
+      fit();
       sendResize();
     };
 
@@ -224,28 +248,33 @@
     };
 
     ws.onclose = ev => {
-      // code 1000 = normal close (copilot exited cleanly).
-      // Anything else = network error / server restart.
-      if (ev.code === 1000 || ev.wasClean) {
-        sessionEnded = true;
-        setStatus("warning", "Session ended \u2014 press any key to restart", "");
-        term.write("\r\n\x1b[33m[session ended \u2014 press any key to start a new session]\x1b[0m\r\n");
-        // Wait for a keypress, then reconnect.
-        const restartOnKey = term.onKey(() => {
-          restartOnKey.dispose();
+      if (manualClose) return;
+      if (ev.code === 1000) {
+        // Copilot session ended cleanly -- wait for keypress to restart.
+        setStatus("warning", "Session ended", currentUser);
+        btnRecon.classList.add("visible");
+        term.write("\r\n\x1b[2m[\u2014 session ended \u2014 press any key or click Reconnect to start a new session]\x1b[0m\r\n");
+        const disposable = term.onKey(() => {
+          disposable.dispose();
           connectTerminal();
         });
       } else {
-        // Network error: exponential back-off reconnect.
+        // Network/server error -- exponential back-off.
         setStatus("", "Reconnecting\u2026", "");
+        btnRecon.classList.add("visible");
         reconnectDelay = Math.min(reconnectDelay * 1.5, 20000);
         reconnectTimer = setTimeout(connectTerminal, reconnectDelay);
       }
     };
 
-    ws.onerror = () => { /* onclose fires after onerror */ };
+    ws.onerror = () => { /* onclose fires right after */ };
   }
 
+  window.manualReconnect = function () {
+    clearTimeout(reconnectTimer);
+    btnRecon.classList.remove("visible");
+    connectTerminal();
+  };
 
   term.onData(data => {
     if (ws && ws.readyState === WebSocket.OPEN)
@@ -256,22 +285,21 @@
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const buf = new Uint8Array(5);
     buf[0] = 0x01;
-    const v = new DataView(buf.buffer);
-    v.setUint16(1, term.rows, false);
-    v.setUint16(3, term.cols, false);
+    const dv = new DataView(buf.buffer);
+    dv.setUint16(1, term.rows, false);
+    dv.setUint16(3, term.cols, false);
     ws.send(buf);
   }
 
-  const ro = new ResizeObserver(() => { fitAddon.fit(); sendResize(); });
+  const ro = new ResizeObserver(() => { fit(); sendResize(); });
   ro.observe(document.getElementById("terminal-wrap"));
-  window.addEventListener("resize", () => { fitAddon.fit(); sendResize(); });
+  window.addEventListener("resize", () => { fit(); sendResize(); });
 
-  // ΓöÇΓöÇ Auth flow ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  let currentUser = "";
-  let pollTimer   = null;
+  // -- Auth flow --------------------------------------------------------------
+  let pollTimer = null;
 
-  function showOverlay()  { overlay.classList.remove("hidden"); }
-  function hideOverlay()  { overlay.classList.add("hidden"); }
+  function showOverlay() { overlay.classList.remove("hidden"); }
+  function hideOverlay() { overlay.classList.add("hidden"); }
 
   function onAuthenticated(username) {
     currentUser = username || "";
@@ -281,13 +309,13 @@
 
   async function checkAuth() {
     try {
-      const r   = await fetch(base + "/auth/status");
+      const r    = await fetch(httpBase + "/auth/status");
       const data = await r.json();
       if (data.authenticated) {
         onAuthenticated(data.username);
       } else {
         showOverlay();
-        setStatus("warning", "Not signed in", "");
+        setStatus("warning", "Sign in required", "");
       }
     } catch {
       showOverlay();
@@ -297,23 +325,21 @@
   }
 
   window.startAuth = async function () {
-    signinStep.style.display  = "none";
+    signinStep.style.display = "none";
     deviceStep.classList.add("visible");
-    pollStatus.innerHTML = '<span class="spinner"></span>&nbsp;Starting sign-inΓÇª';
+    pollStatus.innerHTML = '<span class="spinner"></span>&nbsp;Starting sign-in&hellip;';
 
     try {
-      const r    = await fetch(base + "/auth/start", { method: "POST" });
+      const r    = await fetch(httpBase + "/auth/start", { method: "POST" });
       const data = await r.json();
-      const code = data.code || "ΓÇö";
-      const url  = data.url  || "https://github.com/login/device";
-      deviceCode.textContent = code;
-      deviceUrl.href         = url;
-      pollStatus.innerHTML = '<span class="spinner"></span>&nbsp;Waiting for authorizationΓÇª';
+      deviceCode.textContent = data.code || "----";
+      deviceUrl.href         = data.url  || "https://github.com/login/device";
+      pollStatus.innerHTML   = '<span class="spinner"></span>&nbsp;Waiting for authorization&hellip;';
       clearInterval(pollTimer);
       pollTimer = setInterval(pollAuthStatus, 2500);
     } catch (err) {
       pollStatus.className   = "status-msg err";
-      pollStatus.textContent = "Failed to start auth: " + err.message;
+      pollStatus.textContent = "Failed to start: " + err.message;
       signinStep.style.display = "";
       deviceStep.classList.remove("visible");
     }
@@ -321,34 +347,35 @@
 
   async function pollAuthStatus() {
     try {
-      const r    = await fetch(base + "/auth/poll", { method: "POST" });
+      const r    = await fetch(httpBase + "/auth/poll", { method: "POST" });
       const data = await r.json();
       if (data.done && data.authenticated) {
         clearInterval(pollTimer);
         pollStatus.className   = "status-msg ok";
-        pollStatus.textContent = "Γ£ô Signed in as @" + (data.username || "user");
+        pollStatus.textContent = "\u2713 Signed in as @" + (data.username || "user");
         setTimeout(() => onAuthenticated(data.username), 800);
       } else if (data.done && !data.authenticated) {
         clearInterval(pollTimer);
         pollStatus.className   = "status-msg err";
-        pollStatus.textContent = "Authorization failed. Please try again.";
+        pollStatus.textContent = "Authorization failed. Try again.";
         setTimeout(() => {
           signinStep.style.display = "";
           deviceStep.classList.remove("visible");
           pollStatus.innerHTML = "";
         }, 3000);
       }
-    } catch { /* network hiccup ΓÇö keep polling */ }
+    } catch { /* network hiccup -- keep polling */ }
   }
 
   window.copyCode = function (el) {
     navigator.clipboard.writeText(el.textContent.trim()).then(() => {
-      el.style.background = "#1f6feb22";
-      setTimeout(() => (el.style.background = ""), 600);
+      const orig = el.style.background;
+      el.style.background = "#1f6feb44";
+      setTimeout(() => (el.style.background = orig), 600);
     });
   };
 
-  // ΓöÇΓöÇ Boot ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // -- Boot -------------------------------------------------------------------
   checkAuth();
 })();
 </script>
