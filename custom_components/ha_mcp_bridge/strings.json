@@ -4,38 +4,29 @@
       "user": {
         "title": "Connect to HA MCP Bridge",
         "data": {
-          "host": "Add-on host",
+          "host": "Add-on host (e.g. http://127.0.0.1)",
           "port": "Port"
-        },
-        "data_description": {
-          "host": "Hostname or IP of the add-on (default: http://127.0.0.1 under Supervisor).",
-          "port": "TCP port the add-on is listening on (default 8099)."
         }
       },
       "hassio_confirm": {
         "title": "HA MCP Bridge discovered",
-        "description": "Set up Home Assistant to connect to the discovered add-on: **{addon}**?"
+        "description": "Do you want to set up the add-on: **{addon}**?"
       },
       "mcp_setup": {
-        "title": "Connect to an MCP Server (optional)",
-        "description": "Optionally provide an MCP (Model Context Protocol) server URL. Leave blank to skip — you can configure this later in the integration options.\n\nExamples:\n- HA built-in: `http://homeassistant.local:8123/api/mcp_server/sse`\n- External proxy: `https://my-mcp.example.com/sse`",
+        "title": "MCP Server (optional)",
+        "description": "Optionally connect to an MCP server. Leave blank to skip — you can add this later via the integration options.\n\nExample: http://homeassistant.local:8123/api/mcp_server/sse",
         "data": {
           "mcp_url": "MCP Server URL",
           "mcp_token": "Access Token"
-        },
-        "data_description": {
-          "mcp_url": "Full URL of the MCP Server SSE endpoint. Leave blank to skip.",
-          "mcp_token": "Bearer token for authentication. Required for most external servers; optional for HA's built-in MCP."
         }
       }
     },
     "error": {
-      "cannot_connect": "Unable to reach the add-on. Make sure it is installed and running.",
-      "cannot_connect_mcp": "Unable to reach the MCP server at the provided URL. Check the URL and token, or leave blank to skip."
+      "cannot_connect": "Unable to connect. Make sure the add-on is installed and running."
     },
     "abort": {
       "already_configured": "This add-on is already configured.",
-      "cannot_connect": "Could not reach the add-on. Start it and try again from Settings \u2192 Devices & Services."
+      "cannot_connect": "Could not reach the add-on. Start it and try again from Settings → Devices & Services."
     }
   },
   "options": {
@@ -43,14 +34,10 @@
       "init": {
         "title": "HA MCP Bridge options",
         "data": {
-          "update_interval": "Poll interval (seconds)",
-          "mcp_url": "MCP Server URL",
-          "mcp_token": "Access Token"
+          "update_interval": "Poll interval (seconds)"
         },
         "data_description": {
-          "update_interval": "How often HA polls the add-on and MCP server. Min 10 s, max 3600 s.",
-          "mcp_url": "Leave blank to disable MCP server monitoring.",
-          "mcp_token": "Bearer token for the MCP server."
+          "update_interval": "How often to poll the add-on health status. Minimum 10 s, maximum 3600 s."
         }
       }
     }

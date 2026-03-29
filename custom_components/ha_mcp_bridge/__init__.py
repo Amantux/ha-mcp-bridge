@@ -1,4 +1,3 @@
-"""HA MCP Bridge integration setup."""
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
@@ -6,20 +5,24 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client
 
 from .const import DOMAIN
-from .coordinator import HaMcpBridgeCoordinator
+from .coordinator import HaMcpBridgeDataUpdateCoordinator
 
 PLATFORMS = ["sensor"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = aiohttp_client.async_get_clientsession(hass)
-    coordinator = HaMcpBridgeCoordinator(hass, session, entry)
+    coordinator = HaMcpBridgeDataUpdateCoordinator(hass, session, entry)
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Reload the config entry when the user changes options so the coordinator
+    # picks up the new update_interval.
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+
     return True
 
 
@@ -28,6 +31,6 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     hass.data[DOMAIN].pop(entry.entry_id, None)
-    return ok
+    return unload_ok

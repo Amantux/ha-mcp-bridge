@@ -3,24 +3,18 @@ from __future__ import annotations
 
 from urllib.parse import urlparse, urlunparse
 
-from .const import DEFAULT_HEALTH_PATH, DEFAULT_STATUS_PATH
+from .const import DEFAULT_HEALTH_PATH
 
 
-def build_url(host: str, port: int, path: str) -> str:
-    """Build a full URL from host, port and path."""
-    host = host.strip().rstrip("/")
+def build_health_url(host: str, port: int) -> str:
+    host = host.strip()
+    if not host:
+        host = "http://127.0.0.1"
     if not host.startswith(("http://", "https://")):
         host = f"http://{host}"
     parsed = urlparse(host)
     netloc = parsed.netloc
     if ":" not in netloc:
         netloc = f"{netloc}:{port}"
-    return urlunparse(parsed._replace(netloc=netloc, path=path))
-
-
-def build_health_url(host: str, port: int) -> str:
-    return build_url(host, port, DEFAULT_HEALTH_PATH)
-
-
-def build_status_url(host: str, port: int) -> str:
-    return build_url(host, port, DEFAULT_STATUS_PATH)
+    parsed = parsed._replace(netloc=netloc, path="")
+    return urlunparse(parsed) + DEFAULT_HEALTH_PATH

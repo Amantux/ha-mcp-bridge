@@ -1,6 +1,26 @@
 # Changelog
 
-## [0.1.2] - 2026-03-29
+## [0.1.3] - 2026-03-29
+- **Rebuilt from ha-basic-addon patterns.**
+  Every file now follows ha-basic-addon v0.1.13 as the source of truth:
+  - `Dockerfile`: identical pattern (COPY run.sh main.py requirements.txt,
+    pip install + chmod in single RUN, EXPOSE, ENTRYPOINT).
+  - `addon/run.sh`: identical (`#!/usr/bin/env bash`, `set -euo pipefail`,
+    `python3 main.py`).
+  - `addon/main.py`: same structure (load_options → register_discovery →
+    ThreadingHTTPServer) with `ha_mcp_bridge` service name and port 8099.
+  - Integration (`const`, `helpers`, `__init__`, `coordinator`, `sensor`,
+    `config_flow`, `strings`, `translations`): all mirror ha-basic-addon
+    patterns exactly, with MCP-specific additions on top.
+- **New: `async_step_mcp_setup` config flow step.**
+  After Supervisor discovery confirmation (or manual setup), users see a
+  form to optionally provide an MCP server URL and bearer token. Leaving
+  the URL blank skips MCP monitoring. The coordinator probes the URL on
+  every poll and the `MCP Server` sensor reports `connected` /
+  `unreachable` / `not_configured`.
+- **Sensors**: `Status`, `Uptime` (matching ha-basic-addon), plus `MCP Server`.
+
+
 ### Changed — add-on
 - **Rebuilt add-on from ha-basic-addon foundation.**
   `addon/main.py` now uses the exact same s6-overlay-safe structure as
