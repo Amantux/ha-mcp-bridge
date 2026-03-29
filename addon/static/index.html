@@ -198,18 +198,21 @@
   fitAddon.fit();
 
   // ΓöÇΓöÇ WebSocket state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  let ws, reconnectTimer, reconnectDelay = 1000;
+  // -- WebSocket state --------------------------------------------------
+  let ws, reconnectTimer, reconnectDelay = 2000;
+  let sessionEnded = false;   // true when copilot exited cleanly
 
   function connectTerminal() {
     clearTimeout(reconnectTimer);
-    setStatus("warning", "Connecting terminalΓÇª", "");
+    sessionEnded = false;
+    setStatus("warning", "Connecting\u2026", "");
 
     ws = new WebSocket(wsBase + "/ws");
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
       setStatus("online", "GitHub Copilot CLI", currentUser);
-      reconnectDelay = 1000;
+      reconnectDelay = 2000;
       sendResize();
     };
 
@@ -220,12 +223,29 @@
       term.write(data);
     };
 
-    ws.onclose = ws.onerror = () => {
-      setStatus("", "Disconnected", "");
-      reconnectDelay = Math.min(reconnectDelay * 2, 15000);
-      reconnectTimer = setTimeout(connectTerminal, reconnectDelay);
+    ws.onclose = ev => {
+      // code 1000 = normal close (copilot exited cleanly).
+      // Anything else = network error / server restart.
+      if (ev.code === 1000 || ev.wasClean) {
+        sessionEnded = true;
+        setStatus("warning", "Session ended \u2014 press any key to restart", "");
+        term.write("\r\n\x1b[33m[session ended \u2014 press any key to start a new session]\x1b[0m\r\n");
+        // Wait for a keypress, then reconnect.
+        const restartOnKey = term.onKey(() => {
+          restartOnKey.dispose();
+          connectTerminal();
+        });
+      } else {
+        // Network error: exponential back-off reconnect.
+        setStatus("", "Reconnecting\u2026", "");
+        reconnectDelay = Math.min(reconnectDelay * 1.5, 20000);
+        reconnectTimer = setTimeout(connectTerminal, reconnectDelay);
+      }
     };
+
+    ws.onerror = () => { /* onclose fires after onerror */ };
   }
+
 
   term.onData(data => {
     if (ws && ws.readyState === WebSocket.OPEN)

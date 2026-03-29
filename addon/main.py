@@ -210,8 +210,9 @@ def start_auth_login() -> dict:
         ["gh", "auth", "login",
          "--hostname",     "github.com",
          "--git-protocol", "https",
+         "--scopes",       "copilot",
          "--web"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+         "--scopes", "copilot",  # request Copilot API access
         env=_gh_env(), text=True,
     )
     with _auth_lock:
@@ -359,7 +360,7 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
         while True:
             chunk = await queue.get()
             if chunk is None:
-                await ws.close()
+                await ws.close(code=1000, message=b"session ended")
                 return
             try:
                 await ws.send_bytes(chunk)
