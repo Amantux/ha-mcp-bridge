@@ -62,6 +62,7 @@ start_time       = time.time()
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 ANSI             = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
+_COPILOT_PATH: str | None = None  # cached path to copilot binary
 
 # ---------------------------------------------------------------------------
 # Options / Supervisor discovery
