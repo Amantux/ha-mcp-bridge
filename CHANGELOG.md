@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.9] - 2026-03-29
+### Add-on
+- **Switch to new standalone GitHub Copilot CLI.**
+  The deprecated `gh-copilot` extension is replaced by the new `copilot` binary
+  installed via `curl -fsSL https://gh.io/copilot-install | PREFIX=/usr/local bash`.
+  The Dockerfile no longer runs `gh extension install`.
+- **Simplified sidebar UI.**
+  Removed the explicit auth gate. The `copilot` CLI handles its own authentication
+  via the `/login` slash command typed directly in the terminal. No browser redirect
+  or device-code card in the HA sidebar.
+- **Cleaner PTY spawn.**
+  The WebSocket terminal now spawns bare `copilot` (no arguments).  Users get the
+  full interactive TUI: animated banner, slash commands, model picker, MCP agent.
+- **GH_TOKEN forwarded automatically.**
+  If `gh auth login` has stored a token it is forwarded to `copilot` as `GH_TOKEN`
+  so the Copilot CLI can use it without requiring a manual `/login`.
+- **`/chat` non-interactive fallback** (for the HA conversation agent) attempts
+  `copilot --no-tty` with stdin piped; falls back gracefully with a clear error
+  message directing users to authenticate in the sidebar.
+
 ## [0.1.4] - 2026-03-29
 ### Add-on
 - **New: GitHub Copilot chat panel (ingress)**

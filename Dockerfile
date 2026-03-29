@@ -3,26 +3,21 @@ FROM ${BUILD_FROM}
 
 WORKDIR /app
 
-# Install gh CLI (Alpine 3.19 community repo has it).
-# Also install git (required by gh for some operations).
-RUN apk add --no-cache github-cli git
+# Install gh CLI (for auth), curl + bash (for copilot install), git.
+RUN apk add --no-cache github-cli git curl bash
+
+# Install the new standalone GitHub Copilot CLI.
+# This replaces the deprecated gh-copilot extension.
+# https://github.com/github/copilot-cli
+# The install script detects linux/amd64|arm64|armv7 and places
+# the `copilot` binary in /usr/local/bin/copilot.
+RUN curl -fsSL https://gh.io/copilot-install | PREFIX=/usr/local bash
 
 COPY addon/run.sh addon/main.py addon/requirements.txt ./
 COPY addon/static/ ./static/
 
 RUN pip install --no-cache-dir -r requirements.txt && \
     chmod +x ./run.sh
-
-# Install the gh-copilot extension into the image so it is available
-# without a network call at runtime.  GH_CONFIG_DIR points to a
-# throw-away directory during build; the real config (with auth) lives
-# at runtime under /data/gh (mapped by Supervisor).
-ENV GH_CONFIG_DIR=/tmp/gh-build
-RUN gh extension install github/gh-copilot --force || true
-# Copy the extension binaries into a fixed location so they survive
-# after GH_CONFIG_DIR is changed at runtime.
-RUN mkdir -p /app/gh-extensions && \
-    cp -r /tmp/gh-build/extensions /app/gh-extensions/ || true
 
 EXPOSE 8099
 

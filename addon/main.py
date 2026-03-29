@@ -1,26 +1,29 @@
-"""HA MCP Bridge — PTY bridge for gh copilot.
+"""HA MCP Bridge — PTY bridge for the GitHub Copilot CLI.
 
 Architecture
 ------------
-aiohttp serves everything on port 8099:
-  GET  /          xterm.js UI
-  GET  /ws        WebSocket <-> PTY running `gh copilot suggest -t shell`
-  GET  /health    JSON health (polled by HA integration)
-  GET  /auth/status
-  POST /auth/start    starts `gh auth login --web`, returns {code, url}
-  POST /auth/poll     returns buffered lines + done/authenticated
+aiohttp on port 8099:
+  GET  /              xterm.js UI
+  GET  /ws            WebSocket <-> PTY running `copilot`
+  GET  /health        JSON health (polled by HA integration)
+  GET  /auth/status   {authenticated, username} via gh auth status
+  POST /auth/start    start `gh auth login --web`; return {code, url}
+  POST /auth/poll     return buffered lines + done/authenticated
+  POST /chat          non-interactive for HA conversation agent
 
-WebSocket <-> PTY bridge
-------------------------
-os.fork() + os.execvpe() gives gh a real TTY (slave fd) so it renders
-its interactive selection menus with colors. The asyncio event loop
-reads master_fd via loop.add_reader() (non-blocking) and forwards raw
-bytes to the xterm.js WebSocket. Input from xterm.js is written to the
-master fd. Terminal resize messages are sent as binary frames:
-    b'\x01' + struct.pack('HH', rows, cols)
-which the handler applies via TIOCSWINSZ.
+WebSocket <-> PTY
+-----------------
+os.fork() + os.execvpe() gives `copilot` a real PTY so it renders its
+full TUI (animated banner, slash commands, model selector, etc.).
+loop.add_reader() pipes master_fd -> WebSocket bytes without blocking.
+Resize protocol: first byte 0x01 + struct.pack('>HH', rows, cols).
 
-GH_CONFIG_DIR=/data/gh persists the OAuth token across restarts.
+Auth
+----
+gh auth login stores an OAuth token in GH_CONFIG_DIR=/data/gh.
+`copilot` has its own auth via `/login` slash command inside the TUI.
+GH_TOKEN is forwarded to `copilot` from the gh-stored token so the
+user only has to authenticate once when possible.
 """
 from __future__ import annotations
 
@@ -49,7 +52,6 @@ OPTIONS_PATH   = Path("/data/options.json")
 STATIC_DIR     = Path(__file__).parent / "static"
 SUPERVISOR_API = "http://supervisor"
 GH_CONFIG_DIR  = "/data/gh"
-GH_EXT_SRC     = Path("/app/gh-extensions/extensions")
 start_time     = time.time()
 
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
@@ -57,7 +59,7 @@ ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
 # ---------------------------------------------------------------------------
-# Options / discovery
+# Options / Supervisor discovery
 # ---------------------------------------------------------------------------
 
 def load_options() -> dict:
@@ -96,60 +98,40 @@ def register_discovery() -> None:
 
 
 # ---------------------------------------------------------------------------
-# gh helpers
+# gh / copilot helpers
 # ---------------------------------------------------------------------------
 
 def _gh_env() -> dict:
-    env = {**os.environ, "GH_CONFIG_DIR": GH_CONFIG_DIR, "NO_COLOR": "0",
-           "TERM": "xterm-256color"}
+    """Environment for gh subprocess calls."""
+    env = {**os.environ, "GH_CONFIG_DIR": GH_CONFIG_DIR, "NO_COLOR": "1"}
     env.pop("GH_TOKEN", None)
     return env
 
 
-def _install_extensions() -> None:
-    """Ensure gh-copilot extension is available.
+def _copilot_env() -> dict:
+    """Environment for the copilot PTY — pass stored gh token so copilot
+    can authenticate automatically without requiring /login."""
+    env = {**os.environ, "GH_CONFIG_DIR": GH_CONFIG_DIR,
+           "TERM": "xterm-256color", "COLORTERM": "truecolor"}
+    # Try to forward the gh OAuth token so copilot picks it up.
+    token = _gh_token()
+    if token:
+        env["GH_TOKEN"] = token
+        env["GITHUB_TOKEN"] = token
+    return env
 
-    Try the bundled copy first (fast, no network). If that fails or was never
-    built, install from GitHub at runtime. This runs every startup but is a
-    no-op once the extension binary is present in GH_CONFIG_DIR/extensions/.
-    """
-    import shutil
 
-    # 1. Copy bundled binaries (put there at Docker build time) if present.
-    if GH_EXT_SRC.exists():
-        dest = Path(GH_CONFIG_DIR) / "extensions"
-        dest.mkdir(parents=True, exist_ok=True)
-        for item in GH_EXT_SRC.iterdir():
-            target = dest / item.name
-            if not target.exists():
-                try:
-                    shutil.copytree(str(item), str(target))
-                    logger.info("Installed bundled gh extension: %s", item.name)
-                except Exception as exc:
-                    logger.warning("Failed to copy %s: %s", item.name, exc)
-
-    # 2. Verify `gh copilot` actually works.
-    probe = subprocess.run(
-        ["gh", "copilot", "--version"],
-        capture_output=True, env=_gh_env(), timeout=10,
-    )
-    if probe.returncode == 0:
-        logger.info("gh-copilot extension ready: %s", probe.stdout.decode().strip())
-        return
-
-    # 3. Extension missing — install now (network available at runtime).
-    logger.info("gh-copilot extension not found — installing from GitHub...")
-    result = subprocess.run(
-        ["gh", "extension", "install", "github/gh-copilot", "--force"],
-        capture_output=True, text=True, env=_gh_env(), timeout=120,
-    )
-    if result.returncode == 0:
-        logger.info("gh-copilot extension installed successfully")
-    else:
-        logger.error(
-            "Failed to install gh-copilot extension: %s\n%s",
-            result.stdout, result.stderr,
+def _gh_token() -> str | None:
+    """Return the OAuth token stored by `gh auth`."""
+    try:
+        r = subprocess.run(
+            ["gh", "auth", "token", "--hostname", "github.com"],
+            capture_output=True, text=True, env=_gh_env(), timeout=5,
         )
+        t = r.stdout.strip()
+        return t if t else None
+    except Exception:
+        return None
 
 
 def get_auth_status() -> dict:
@@ -215,22 +197,32 @@ def start_auth_login() -> dict:
     return {"code": code, "url": url, "lines": lines}
 
 
+def _check_copilot() -> bool:
+    """Return True if the `copilot` binary is available."""
+    try:
+        r = subprocess.run(["copilot", "--version"],
+                           capture_output=True, timeout=5)
+        return r.returncode == 0
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
-# WebSocket <-> PTY handler
+# WebSocket <-> PTY  (spawns `copilot`)
 # ---------------------------------------------------------------------------
 
 async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResponse:
-    """Spawn `gh copilot suggest -t shell` in a PTY; bridge to xterm.js."""
+    """Bridge xterm.js to a real PTY running the GitHub Copilot CLI."""
     ws = aiohttp.web.WebSocketResponse()
     await ws.prepare(request)
 
-    # Create a PTY pair — slave is the TTY the child process gets.
     master_fd, slave_fd = pty.openpty()
     fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 
-    # fork() so the child gets a fresh process with the slave as its TTY.
     pid = os.fork()
-    if pid == 0:                          # ── child ──
+    if pid == 0:                      # ── child ──
         os.close(master_fd)
         os.setsid()
         fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
@@ -239,9 +231,7 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
         os.dup2(slave_fd, 2)
         if slave_fd > 2:
             os.close(slave_fd)
-        os.execvpe("gh",
-                   ["gh", "copilot", "suggest", "-t", "shell"],
-                   _gh_env())
+        os.execvpe("copilot", ["copilot"], _copilot_env())
         os._exit(1)
 
     # ── parent ──
@@ -276,9 +266,9 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.BINARY:
                 data = msg.data
-                # Resize protocol: first byte 0x01, then struct HH (rows, cols)
+                # Resize: 0x01 + big-endian uint16 rows + uint16 cols
                 if len(data) >= 5 and data[0] == 0x01:
-                    rows, cols = struct.unpack("HH", data[1:5])
+                    rows, cols = struct.unpack(">HH", data[1:5])
                     fcntl.ioctl(master_fd, termios.TIOCSWINSZ,
                                 struct.pack("HHHH", rows, cols, 0, 0))
                 else:
@@ -310,74 +300,28 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
 
 
 # ---------------------------------------------------------------------------
-# HTTP routes
-# ---------------------------------------------------------------------------
-
-async def handle_index(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    idx = STATIC_DIR / "index.html"
-    if idx.exists():
-        return aiohttp.web.Response(body=idx.read_bytes(),
-                                    content_type="text/html")
-    return aiohttp.web.Response(text="UI not found", status=404)
-
-
-async def handle_health(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    s = get_auth_status()
-    return aiohttp.web.json_response({
-        "status": "ok",
-        "uptime": round(time.time() - start_time, 2),
-        "authenticated": s["authenticated"],
-        "timestamp": time.time(),
-    })
-
-
-async def handle_auth_status(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    return aiohttp.web.json_response(get_auth_status())
-
-
-async def handle_auth_start(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, start_auth_login)
-    return aiohttp.web.json_response(result)
-
-
-async def handle_auth_poll(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    with _auth_lock:
-        lines = list(_auth_lines)
-        done = _auth_proc is None or _auth_proc.poll() is not None
-    s = get_auth_status() if done else {}
-    return aiohttp.web.json_response({
-        "lines": lines,
-        "done": done,
-        "authenticated": s.get("authenticated", False),
-        "username": s.get("username", ""),
-    })
-
-
-# ---------------------------------------------------------------------------
-# /chat — non-interactive, used by the HA conversation agent
+# /chat — non-interactive for HA conversation agent
 # ---------------------------------------------------------------------------
 
 def _run_copilot_chat(prompt: str) -> str:
-    """Run gh copilot suggest non-interactively; strip ANSI; return text."""
+    """Send a single prompt to `copilot` non-interactively via stdin."""
+    env = {**_copilot_env(), "NO_COLOR": "1"}
     result = subprocess.run(
-        ["gh", "copilot", "suggest", "-t", "shell", prompt],
-        stdin=subprocess.DEVNULL,
+        ["copilot", "--no-tty"],
+        input=prompt + "\n/exit\n",
         capture_output=True,
         text=True,
-        env={**_gh_env(), "NO_COLOR": "1"},
-        timeout=60,
+        env=env,
+        timeout=90,
     )
     combined = result.stdout + (("\n" + result.stderr) if result.stderr else "")
     clean = ANSI.sub("", combined).strip()
-    if not clean:
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"gh copilot exited {result.returncode}. "
-                "Sign in via the Copilot panel in the HA sidebar first."
-            )
-        raise RuntimeError("gh copilot returned no output.")
-    return clean
+    if not clean and result.returncode != 0:
+        raise RuntimeError(
+            "copilot CLI failed. Make sure you have signed in via the Copilot "
+            "panel in the HA sidebar (/login command inside the terminal)."
+        )
+    return clean or "(no response)"
 
 
 async def handle_chat(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -400,7 +344,51 @@ async def handle_chat(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 
 # ---------------------------------------------------------------------------
-# App factory + entry point
+# HTTP routes
+# ---------------------------------------------------------------------------
+
+async def handle_index(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    idx = STATIC_DIR / "index.html"
+    if idx.exists():
+        return aiohttp.web.Response(body=idx.read_bytes(), content_type="text/html")
+    return aiohttp.web.Response(text="UI not found", status=404)
+
+
+async def handle_health(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    s = get_auth_status()
+    return aiohttp.web.json_response({
+        "status": "ok",
+        "uptime": round(time.time() - start_time, 2),
+        "authenticated": s["authenticated"],
+        "copilot_available": _check_copilot(),
+        "timestamp": time.time(),
+    })
+
+
+async def handle_auth_status(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    return aiohttp.web.json_response(get_auth_status())
+
+
+async def handle_auth_start(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, start_auth_login)
+    return aiohttp.web.json_response(result)
+
+
+async def handle_auth_poll(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    with _auth_lock:
+        lines = list(_auth_lines)
+        done = _auth_proc is None or _auth_proc.poll() is not None
+    s = get_auth_status() if done else {}
+    return aiohttp.web.json_response({
+        "lines": lines, "done": done,
+        "authenticated": s.get("authenticated", False),
+        "username": s.get("username", ""),
+    })
+
+
+# ---------------------------------------------------------------------------
+# App + entry point
 # ---------------------------------------------------------------------------
 
 def make_app() -> aiohttp.web.Application:
@@ -410,24 +398,23 @@ def make_app() -> aiohttp.web.Application:
     app.router.add_get("/health",      handle_health)
     app.router.add_get("/auth/status", handle_auth_status)
     app.router.add_get("/ws",          ws_terminal)
-    app.router.add_post("/chat",        handle_chat)
-    app.router.add_post("/auth/start",  handle_auth_start)
-    app.router.add_post("/auth/poll",   handle_auth_poll)
+    app.router.add_post("/chat",       handle_chat)
+    app.router.add_post("/auth/start", handle_auth_start)
+    app.router.add_post("/auth/poll",  handle_auth_poll)
     return app
 
 
 async def _main() -> None:
-    # Run extension install in a thread so it doesn't block the event loop.
-    # The HTTP server starts immediately; /ws will work once the extension is ready.
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _install_extensions)
     register_discovery()
     app = make_app()
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, HOST, PORT)
     await site.start()
-    logger.info("ha_mcp_bridge listening on %s:%s", HOST, PORT)
+    copilot_ok = _check_copilot()
+    logger.info("ha_mcp_bridge listening on %s:%s  copilot=%s", HOST, PORT, copilot_ok)
+    if not copilot_ok:
+        logger.warning("'copilot' binary not found in PATH — check Dockerfile build")
     while True:
         await asyncio.sleep(3600)
 
