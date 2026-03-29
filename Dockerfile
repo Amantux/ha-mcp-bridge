@@ -8,11 +8,11 @@ WORKDIR /app
 # nodejs + npm: needed at runtime to install the Copilot CLI
 RUN apk add --no-cache github-cli nodejs npm
 
-COPY addon/run.sh addon/main.py addon/requirements.txt ./
+COPY addon/run.sh addon/main.py addon/requirements.txt addon/copilot-repl.sh ./
 COPY addon/static/ ./static/
 
 RUN pip install --no-cache-dir -r requirements.txt && \
-    chmod +x ./run.sh
+    chmod +x ./run.sh ./copilot-repl.sh
 
 EXPOSE 8099
 

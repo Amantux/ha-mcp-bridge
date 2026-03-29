@@ -327,13 +327,14 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
     fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 
 
-    # copilot IS the terminal app — spawn it directly in the PTY.
-    # The binary from npm is a Node.js script; _copilot_path() gives the exact
-    # path and _copilot_env() ensures node is findable via PATH.
-    copilot_bin = _copilot_path() or "copilot"
+
+    # Spawn the REPL wrapper script — this keeps the session alive.
+    # copilot is a one-shot CLI (exits after each response); the wrapper
+    # loops to give a persistent interactive terminal experience.
+    repl = Path(__file__).parent / "copilot-repl.sh"
     env = _copilot_env()
     proc = subprocess.Popen(
-        [copilot_bin],
+        ["/bin/sh", str(repl)],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
