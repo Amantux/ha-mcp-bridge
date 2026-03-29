@@ -126,16 +126,36 @@ def _gh_token() -> str | None:
         return None
 
 
+def _npm_global_bin() -> str:
+    """Return the npm global bin directory (works even if not in PATH)."""
+    try:
+        r = subprocess.run(["npm", "bin", "-g"],
+                           capture_output=True, text=True, timeout=10)
+        p = r.stdout.strip()
+        if p and os.path.isdir(p):
+            return p
+    except Exception:
+        pass
+    for p in ('/usr/local/bin', '/root/.npm-global/bin',
+              '/usr/local/lib/node_modules/.bin'):
+        if os.path.isdir(p):
+            return p
+    return '/usr/local/bin'
+
+
 def _copilot_env() -> dict:
-    """Env for the copilot PTY ΓÇö forward gh token when available."""
+    """Env for the copilot PTY - forward gh token when available."""
+    npm_bin = _npm_global_bin()
+    existing_path = os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')
     env = {**os.environ,
-           "GH_CONFIG_DIR": GH_CONFIG_DIR,
-           "TERM":          "xterm-256color",
-           "COLORTERM":     "truecolor"}
+           'PATH':          f'{npm_bin}:/usr/local/bin:{existing_path}',
+           'GH_CONFIG_DIR': GH_CONFIG_DIR,
+           'TERM':          'xterm-256color',
+           'COLORTERM':     'truecolor'}
     token = _gh_token()
     if token:
-        env["GH_TOKEN"]     = token
-        env["GITHUB_TOKEN"] = token
+        env['GH_TOKEN']     = token
+        env['GITHUB_TOKEN'] = token
     return env
 
 
@@ -232,19 +252,18 @@ def poll_auth() -> dict:
 # ---------------------------------------------------------------------------
 
 def _check_copilot() -> bool:
-    """Return True if `copilot` is in PATH and executes successfully."""
-    try:
-        r = subprocess.run(["copilot", "--version"],
-                           capture_output=True, timeout=10)
-        if r.returncode == 0:
-            ver = (r.stdout or r.stderr or b"").decode(errors="replace").strip()
-            logger.info("copilot version: %s", ver.splitlines()[0] if ver else "?")
-            return True
-        return False
-    except FileNotFoundError:
-        return False
-    except Exception:
-        return False
+    """Return True if the copilot binary exists and is reachable.
+    Uses shutil.which with an augmented PATH that includes the npm global
+    bin dir, so Python subprocesses find the same binary as the shell."""
+    import shutil
+    npm_bin = _npm_global_bin()
+    search_path = f'{npm_bin}:/usr/local/bin:/usr/bin:/bin'
+    copilot_path = shutil.which('copilot', path=search_path)
+    if copilot_path:
+        logger.info('copilot binary found: %s', copilot_path)
+        return True
+    logger.debug('copilot not found in PATH=%s', search_path)
+    return False
 
 
 def _ensure_copilot() -> None:
