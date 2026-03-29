@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client
 
 from .const import DOMAIN
-from .conversation import HaMcpBridgeConversationAgent
 from .coordinator import HaMcpBridgeDataUpdateCoordinator
 
-PLATFORMS = ["sensor"]
+# "conversation" tells HA to call conversation.async_setup_entry(), which
+# registers the ConversationEntity that appears in Settings -> Voice Assistants.
+PLATFORMS = ["sensor", "conversation"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -19,15 +19,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
+    # This loads both sensor.py and conversation.py as platforms.
+    # conversation.py registers HaMcpBridgeCopilotEntity, which HA exposes
+    # in Settings -> Voice Assistants as a selectable conversation agent.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Register the Copilot conversation agent so it appears in
-    # Settings → Voice Assistants and answers in the HA conversation UI.
-    agent = HaMcpBridgeConversationAgent(hass, entry)
-    conversation.async_set_agent(hass, entry, agent)
-
-    # Reload the config entry when the user changes options so the coordinator
-    # picks up the new update_interval.
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
 
     return True
@@ -38,9 +34,6 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    # Unregister the conversation agent before unloading platforms.
-    conversation.async_unset_agent(hass, entry)
-
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok
