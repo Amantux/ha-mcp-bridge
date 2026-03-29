@@ -244,25 +244,56 @@ def _check_copilot() -> bool:
 
 def _ensure_copilot() -> None:
     """Runtime fallback: install copilot binary if build-time install was
-    skipped (e.g., unsupported arch, offline build environment)."""
+    skipped (e.g., unsupported arch, offline build environment).
+
+    Downloads the tarball directly instead of piping through the install
+    script, which runs SHA256 validation that exits 1 on partial downloads
+    or network glitches.
+    """
     if _check_copilot():
         return
-    import platform
-    machine = platform.machine().lower()
-    if machine not in ("x86_64", "amd64", "aarch64", "arm64"):
-        logger.warning("copilot binary not available for arch %s", machine)
+    import platform, tarfile, tempfile
+    machine  = platform.machine().lower()
+    arch_map = {"x86_64": "x64", "amd64": "x64",
+                "aarch64": "arm64", "arm64": "arm64"}
+    dl_arch  = arch_map.get(machine)
+    if not dl_arch:
+        logger.warning("copilot binary not available for arch %s — skipping", machine)
         return
-    logger.info("copilot binary missing — attempting runtime install…")
+
+    url = (
+        "https://github.com/github/copilot-cli/releases/latest/download/"
+        f"copilot-linux-{dl_arch}.tar.gz"
+    )
+    logger.info("copilot binary missing — downloading %s", url)
     try:
-        r = subprocess.run(
-            ["bash", "-c",
-             "curl -fsSL https://gh.io/copilot-install | PREFIX=/usr/local bash"],
-            timeout=120,
-        )
-        if r.returncode == 0 and _check_copilot():
+        with tempfile.TemporaryDirectory() as tmp:
+            tarball = os.path.join(tmp, "copilot.tar.gz")
+            r = subprocess.run(
+                ["curl", "-fsSL", "-o", tarball, url],
+                timeout=120,
+            )
+            if r.returncode != 0:
+                raise RuntimeError(f"curl returned {r.returncode}")
+
+            with tarfile.open(tarball, "r:gz") as tf:
+                binary_member = next(
+                    (m for m in tf.getmembers()
+                     if os.path.basename(m.name) == "copilot" and m.isfile()),
+                    None,
+                )
+                if binary_member is None:
+                    raise RuntimeError("copilot binary not found in tarball")
+                binary_member.name = "copilot"
+                tf.extract(binary_member, "/usr/local/bin/")
+
+            os.chmod("/usr/local/bin/copilot", 0o755)
+
+        if _check_copilot():
             logger.info("copilot installed successfully at runtime")
         else:
-            logger.warning("copilot runtime install returned %s", r.returncode)
+            logger.warning("copilot extracted but binary check failed "
+                           "(possible glibc/musl incompatibility)")
     except Exception as exc:
         logger.warning("copilot runtime install failed: %s", exc)
 
