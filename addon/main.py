@@ -251,19 +251,26 @@ def poll_auth() -> dict:
 # copilot binary helpers
 # ---------------------------------------------------------------------------
 
-def _check_copilot() -> bool:
-    """Return True if the copilot binary exists and is reachable.
-    Uses shutil.which with an augmented PATH that includes the npm global
-    bin dir, so Python subprocesses find the same binary as the shell."""
+def _copilot_path() -> str | None:
+    """Return the full path to the copilot binary, or None. Cached after first call."""
+    global _COPILOT_PATH
+    if _COPILOT_PATH is not None:
+        return _COPILOT_PATH or None
     import shutil
     npm_bin = _npm_global_bin()
     search_path = f'{npm_bin}:/usr/local/bin:/usr/bin:/bin'
-    copilot_path = shutil.which('copilot', path=search_path)
-    if copilot_path:
-        logger.info('copilot binary found: %s', copilot_path)
-        return True
-    logger.debug('copilot not found in PATH=%s', search_path)
-    return False
+    found = shutil.which('copilot', path=search_path)
+    _COPILOT_PATH = found if found else ''
+    if found:
+        logger.info('copilot binary: %s', found)
+    else:
+        logger.warning('copilot not found in PATH=%s', search_path)
+    return found or None
+
+
+def _check_copilot() -> bool:
+    """Return True if the copilot binary is available."""
+    return bool(_copilot_path())
 
 
 def _ensure_copilot() -> None:
@@ -281,6 +288,7 @@ def _ensure_copilot() -> None:
                          r.returncode, r.stderr[-500:])
         elif _check_copilot():
             logger.info("copilot installed successfully")
+            _COPILOT_PATH = None  # reset cache so next check re-scans
         else:
             logger.error("npm install succeeded but copilot still not runnable")
     except FileNotFoundError:
@@ -319,14 +327,17 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
     # Spawn `copilot` with slave_fd as its controlling terminal.
     # start_new_session=True creates a new process group / session so the
     # slave_fd becomes the controlling TTY for the child.
+    env = _copilot_env()
+    # Running bare "copilot" exits immediately (just shows usage).
+    # Spawn a shell with copilot in PATH for a proper interactive session.
     proc = subprocess.Popen(
-        ["copilot"],
+        ["/bin/sh"],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
         close_fds=True,
         start_new_session=True,
-        env=_copilot_env(),
+        env=env,
     )
     os.close(slave_fd)   # parent no longer needs the slave end
 
@@ -401,28 +412,38 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
 # ---------------------------------------------------------------------------
 
 def _run_copilot_chat(prompt: str) -> str:
+    """Run copilot suggest non-interactively for the HA conversation agent."""
     if not _check_copilot():
         raise RuntimeError(
             "GitHub Copilot CLI is not available. "
             "Please authenticate via the Copilot panel in the HA sidebar."
         )
+    copilot_bin = _copilot_path() or "copilot"
     env = {**_copilot_env(), "NO_COLOR": "1"}
+    # copilot suggest -s sh <prompt>: suggest a shell command for the question.
     result = subprocess.run(
-        ["copilot", "--no-tty"],
-        input=prompt + "\n/exit\n",
+        [copilot_bin, "suggest", "-s", "sh", prompt],
+        input="\n",      # auto-accept first suggestion
         capture_output=True,
         text=True,
         env=env,
-        timeout=90,
+        timeout=60,
     )
     combined = result.stdout + (("\n" + result.stderr) if result.stderr else "")
     clean = ANSI.sub("", combined).strip()
-    if not clean and result.returncode != 0:
-        raise RuntimeError(
-            "Copilot CLI returned no output. Sign in via the sidebar panel "
-            "using the /login command."
+    if not clean:
+        # fallback: try explain (for when user pastes a command to understand)
+        r2 = subprocess.run(
+            [copilot_bin, "explain", prompt],
+            capture_output=True, text=True, env=env, timeout=60,
         )
-    return clean or "(no response)"
+        clean = ANSI.sub("", r2.stdout + r2.stderr).strip()
+    if not clean:
+        raise RuntimeError(
+            "Copilot returned no output. Ensure you are signed in via the "
+            "sidebar panel and your GitHub account has Copilot access."
+        )
+    return clean
 
 
 async def handle_chat(request: aiohttp.web.Request) -> aiohttp.web.Response:
