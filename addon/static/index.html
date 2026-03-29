@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>GitHub Copilot — Home Assistant</title>
+  <title>GitHub Copilot ΓÇö Home Assistant</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
@@ -13,7 +13,7 @@
                  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
                  overflow: hidden; }
 
-    /* ── status bar ─────────────────────────────────────────────────────── */
+    /* ΓöÇΓöÇ status bar ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
     #status-bar {
       position: fixed; top: 0; left: 0; right: 0; height: 30px; z-index: 20;
       background: #161b22; border-bottom: 1px solid #30363d;
@@ -28,7 +28,7 @@
     #conn-dot.warning { background: #d29922; }
     #status-user { margin-left: auto; color: #58a6ff; }
 
-    /* ── auth overlay ───────────────────────────────────────────────────── */
+    /* ΓöÇΓöÇ auth overlay ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
     #auth-overlay {
       position: fixed; inset: 30px 0 0 0; z-index: 10;
       background: #0d1117;
@@ -78,7 +78,7 @@
     .status-msg.ok  { color: #3fb950; }
     .status-msg.err { color: #f85149; }
 
-    /* ── terminal ───────────────────────────────────────────────────────── */
+    /* ΓöÇΓöÇ terminal ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
     #terminal-wrap {
       position: fixed; top: 30px; left: 0; right: 0; bottom: 0; z-index: 1;
     }
@@ -91,7 +91,7 @@
 <!-- status bar -->
 <div id="status-bar">
   <span id="conn-dot" class="warning"></span>
-  <span id="conn-label">Checking auth…</span>
+  <span id="conn-label">Checking authΓÇª</span>
   <span id="status-user"></span>
 </div>
 
@@ -128,32 +128,19 @@
                    0 1.6-.01 2.9-.01 3.29 0 .32.21.7.83.58C20.56 21.8 24 17.3 24 12
                    24 5.37 18.63 0 12 0z"/>
         </svg>
-        Sign in with GitHub
+        Continue with GitHub
       </button>
-      <div style="margin-top:18px;padding-top:18px;border-top:1px solid #21262d;text-align:left">
-        <p style="font-size:.8rem;color:#6e7681;margin-bottom:8px">
-          Or, if you already have a
-          <a href="https://github.com/settings/personal-access-tokens/new" target="_blank"
-             rel="noopener" style="color:#58a6ff">fine-grained PAT</a>
-          with <strong style="color:#c9d1d9">Copilot Requests</strong> permission,
-          paste it in the add-on configuration as <code style="color:#79c0ff">copilot_token</code>
-          and it will be used automatically — no sign-in required.
-        </p>
-        <button class="btn btn-secondary" onclick="skipToTerminal()" style="width:100%;justify-content:center">
-          Open terminal (sign in via <code>/login</code>)
-        </button>
-      </div>
     </div>
 
     <!-- step 2: device code + polling -->
     <div id="device-step">
       <p style="margin-bottom:8px">Open <strong>github.com/login/device</strong> and enter:</p>
-      <div class="code-box" id="device-code" onclick="copyCode(this)" title="Click to copy">····-····</div>
+      <div class="code-box" id="device-code" onclick="copyCode(this)" title="Click to copy">┬╖┬╖┬╖┬╖-┬╖┬╖┬╖┬╖</div>
       <p class="copy-hint">Click the code to copy it</p>
       <a id="device-url" href="https://github.com/login/device" target="_blank" rel="noopener"
-         class="btn btn-secondary">Open GitHub Device Auth ↗</a>
+         class="btn btn-secondary">Open GitHub Device Auth Γåù</a>
       <div class="status-msg" id="poll-status">
-        <span class="spinner"></span>&nbsp;Waiting for authorization…
+        <span class="spinner"></span>&nbsp;Waiting for authorizationΓÇª
       </div>
     </div>
   </div>
@@ -167,11 +154,11 @@
 <script>
 "use strict";
 (function () {
-  // ── base URL (strips ingress path prefix) ─────────────────────────────
+  // ΓöÇΓöÇ base URL (strips ingress path prefix) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const base   = window.location.href.replace(/\/$/, "");
   const wsBase = base.replace(/^http/, "ws");
 
-  // ── DOM refs ────────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ DOM refs ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const overlay     = document.getElementById("auth-overlay");
   const signinStep  = document.getElementById("signin-step");
   const deviceStep  = document.getElementById("device-step");
@@ -188,7 +175,7 @@
     statusUser.textContent = user ? "@" + user : "";
   }
 
-  // ── xterm.js setup ──────────────────────────────────────────────────────
+  // ΓöÇΓöÇ xterm.js setup ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const term = new Terminal({
     theme: {
       background: "#0d1117", foreground: "#c9d1d9",
@@ -210,12 +197,12 @@
   term.open(document.getElementById("terminal"));
   fitAddon.fit();
 
-  // ── WebSocket state ──────────────────────────────────────────────────────
+  // ΓöÇΓöÇ WebSocket state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   let ws, reconnectTimer, reconnectDelay = 1000;
 
   function connectTerminal() {
     clearTimeout(reconnectTimer);
-    setStatus("warning", "Connecting terminal…", "");
+    setStatus("warning", "Connecting terminalΓÇª", "");
 
     ws = new WebSocket(wsBase + "/ws");
     ws.binaryType = "arraybuffer";
@@ -259,7 +246,7 @@
   ro.observe(document.getElementById("terminal-wrap"));
   window.addEventListener("resize", () => { fitAddon.fit(); sendResize(); });
 
-  // ── Auth flow ────────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Auth flow ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   let currentUser = "";
   let pollTimer   = null;
 
@@ -272,22 +259,15 @@
     connectTerminal();
   }
 
-  // Allow skipping the auth overlay and going straight to the terminal
-  // (user can type /login inside the copilot CLI if needed).
-  window.skipToTerminal = function () {
-    hideOverlay();
-    connectTerminal();
-  };
-
   async function checkAuth() {
     try {
-      const r    = await fetch(base + "/auth/status");
+      const r   = await fetch(base + "/auth/status");
       const data = await r.json();
       if (data.authenticated) {
         onAuthenticated(data.username);
       } else {
         showOverlay();
-        setStatus("warning", "Not signed in to GitHub", "");
+        setStatus("warning", "Not signed in", "");
       }
     } catch {
       showOverlay();
@@ -299,16 +279,16 @@
   window.startAuth = async function () {
     signinStep.style.display  = "none";
     deviceStep.classList.add("visible");
-    pollStatus.innerHTML = '<span class="spinner"></span>&nbsp;Starting sign-in…';
+    pollStatus.innerHTML = '<span class="spinner"></span>&nbsp;Starting sign-inΓÇª';
 
     try {
       const r    = await fetch(base + "/auth/start", { method: "POST" });
       const data = await r.json();
-      const code = data.code || "—";
+      const code = data.code || "ΓÇö";
       const url  = data.url  || "https://github.com/login/device";
       deviceCode.textContent = code;
       deviceUrl.href         = url;
-      pollStatus.innerHTML = '<span class="spinner"></span>&nbsp;Waiting for authorization…';
+      pollStatus.innerHTML = '<span class="spinner"></span>&nbsp;Waiting for authorizationΓÇª';
       clearInterval(pollTimer);
       pollTimer = setInterval(pollAuthStatus, 2500);
     } catch (err) {
@@ -326,7 +306,7 @@
       if (data.done && data.authenticated) {
         clearInterval(pollTimer);
         pollStatus.className   = "status-msg ok";
-        pollStatus.textContent = "✓ Signed in as @" + (data.username || "user");
+        pollStatus.textContent = "Γ£ô Signed in as @" + (data.username || "user");
         setTimeout(() => onAuthenticated(data.username), 800);
       } else if (data.done && !data.authenticated) {
         clearInterval(pollTimer);
@@ -338,7 +318,7 @@
           pollStatus.innerHTML = "";
         }, 3000);
       }
-    } catch { /* network hiccup — keep polling */ }
+    } catch { /* network hiccup ΓÇö keep polling */ }
   }
 
   window.copyCode = function (el) {
@@ -348,7 +328,7 @@
     });
   };
 
-  // ── Boot ─────────────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Boot ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   checkAuth();
 })();
 </script>

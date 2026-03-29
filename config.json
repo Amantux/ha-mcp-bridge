@@ -1,6 +1,6 @@
 {
   "name": "HA MCP Bridge",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "slug": "ha-mcp-bridge",
   "description": "GitHub Copilot chat panel for Home Assistant, backed by an MCP server bridge.",
   "url": "https://github.com/Amantux/ha-mcp-bridge",
@@ -13,8 +13,7 @@
   "boot": "auto",
   "options": {
     "host": "0.0.0.0",
-    "port": 8099,
-    "copilot_token": ""
+    "port": 8099
   },
   "ports": {
     "8099/tcp": 8099
@@ -31,7 +30,6 @@
   "panel_title": "Copilot",
   "schema": {
     "host": "str?",
-    "port": "int?",
-    "copilot_token": "str?"
+    "port": "int?"
   }
 }

@@ -1,4 +1,4 @@
-"""HA MCP Bridge — PTY bridge for the GitHub Copilot CLI.
+"""HA MCP Bridge ΓÇö PTY bridge for the GitHub Copilot CLI.
 
 Architecture
 ------------
@@ -14,7 +14,7 @@ aiohttp on port 8099:
 PTY bridge (no fork)
 --------------------
 Uses subprocess.Popen(stdin=slave, stdout=slave, stderr=slave) instead of
-os.fork() + os.execvpe() — avoids DeprecationWarning in multi-threaded
+os.fork() + os.execvpe() ΓÇö avoids DeprecationWarning in multi-threaded
 asyncio ("This process is multi-threaded, use of fork() may lead to
 deadlocks") and is safe with aiohttp's thread-pool executor.
 
@@ -25,7 +25,7 @@ Auth flow
 ---------
 1. UI loads: polls /auth/status.
    - If not authed with gh: renders an inline device-code card.
-   - User clicks "Sign in with GitHub" → POST /auth/start → shows code + URL.
+   - User clicks "Sign in with GitHub" ΓåÆ POST /auth/start ΓåÆ shows code + URL.
    - UI polls /auth/poll every 2 s; when done it auto-connects the terminal.
 2. After gh auth the stored token is forwarded to `copilot` as GH_TOKEN so
    the copilot CLI can skip its own /login on first launch.
@@ -83,7 +83,7 @@ PORT = int(OPTIONS.get("port", 8099))
 
 def register_discovery() -> None:
     if not SUPERVISOR_TOKEN:
-        logger.warning("SUPERVISOR_TOKEN not set — skipping discovery.")
+        logger.warning("SUPERVISOR_TOKEN not set ΓÇö skipping discovery.")
         return
     payload = json.dumps({
         "service": "ha_mcp_bridge",
@@ -127,37 +127,15 @@ def _gh_token() -> str | None:
 
 
 def _copilot_env() -> dict:
-    """Env for the copilot PTY.
-
-    Token precedence (per official docs):
-      1. COPILOT_GITHUB_TOKEN  — fine-grained PAT with 'Copilot Requests' perm
-      2. GH_TOKEN / GITHUB_TOKEN — OAuth token (works if scopes include copilot)
-      3. No token — copilot will prompt /login on first launch
-
-    If the add-on option `copilot_token` is set, it is used as
-    COPILOT_GITHUB_TOKEN (highest precedence, skips /login entirely).
-    """
+    """Env for the copilot PTY ΓÇö forward gh token when available."""
     env = {**os.environ,
            "GH_CONFIG_DIR": GH_CONFIG_DIR,
            "TERM":          "xterm-256color",
-           "COLORTERM":     "truecolor",
-           # Store copilot auth data under /data so it persists
-           "COPILOT_DATA_DIR": "/data/copilot",
-           }
-    # Remove any inherited tokens — we set them explicitly below
-    for k in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"):
-        env.pop(k, None)
-
-    # Prefer an explicit PAT from add-on options
-    pat = OPTIONS.get("copilot_token", "").strip()
-    if pat:
-        env["COPILOT_GITHUB_TOKEN"] = pat
-        return env
-
-    # Fall back to the gh-stored OAuth token
-    gh_tok = _gh_token()
-    if gh_tok:
-        env["GH_TOKEN"] = gh_tok
+           "COLORTERM":     "truecolor"}
+    token = _gh_token()
+    if token:
+        env["GH_TOKEN"]     = token
+        env["GITHUB_TOKEN"] = token
     return env
 
 
@@ -254,11 +232,7 @@ def poll_auth() -> dict:
 # ---------------------------------------------------------------------------
 
 def _check_copilot() -> bool:
-    """Return True only if `copilot` is in PATH and runs successfully."""
-    which = subprocess.run(["which", "copilot"],
-                           capture_output=True, text=True).stdout.strip()
-    if not which:
-        return False
+    """Return True if `copilot` is in PATH and executes successfully."""
     try:
         r = subprocess.run(["copilot", "--version"],
                            capture_output=True, timeout=10)
@@ -266,50 +240,48 @@ def _check_copilot() -> bool:
             ver = (r.stdout or r.stderr or b"").decode(errors="replace").strip()
             logger.info("copilot version: %s", ver.splitlines()[0] if ver else "?")
             return True
-        logger.warning("copilot --version exited %s: %s",
-                       r.returncode,
-                       (r.stderr or r.stdout or b"").decode(errors="replace").strip())
         return False
-    except Exception as exc:
-        logger.warning("copilot --version failed: %s", exc)
+    except FileNotFoundError:
+        return False
+    except Exception:
         return False
 
 
 def _ensure_copilot() -> None:
     """Install the Copilot CLI via npm if not already present.
 
-    This is the official install method per GitHub docs:
+    Official install method per GitHub documentation:
     https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli
-    npm install -g @github/copilot  (requires Node.js 22+)
+      npm install -g @github/copilot  (requires Node.js 22+)
+
+    Works on all arches (amd64, aarch64, armv7) — no binary extraction or
+    glibc compatibility issues.
     """
     if _check_copilot():
         return
-    logger.info("copilot not found — installing via npm install -g @github/copilot …")
+    logger.info("copilot not found — installing via: npm install -g @github/copilot")
     try:
         r = subprocess.run(
             ["npm", "install", "-g", "@github/copilot"],
             capture_output=True, text=True, timeout=180,
         )
-        logger.info("npm stdout: %s", r.stdout[-2000:] if r.stdout else "(none)")
         if r.returncode != 0:
-            logger.error("npm install failed (exit %s): %s", r.returncode, r.stderr[-1000:])
+            logger.error("npm install failed (exit %s):\n%s",
+                         r.returncode, r.stderr[-1000:])
             return
         if _check_copilot():
             logger.info("copilot installed successfully via npm")
         else:
-            logger.error(
-                "npm install succeeded but `copilot` still not runnable. "
-                "Ensure Node.js 22+ is installed (check: node --version)."
-            )
+            logger.error("npm install succeeded but copilot still not runnable — "
+                         "ensure Node.js 22+ is installed (node --version)")
     except FileNotFoundError:
-        logger.error("npm not found — cannot install copilot. "
-                     "Ensure nodejs and npm are in the Docker image.")
+        logger.error("npm not found in PATH — ensure nodejs/npm are in the image")
     except Exception as exc:
-        logger.error("copilot npm install failed: %s", exc)
+        logger.error("copilot install failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
-# WebSocket <-> PTY  (subprocess.Popen — no os.fork())
+# WebSocket <-> PTY  (subprocess.Popen ΓÇö no os.fork())
 # ---------------------------------------------------------------------------
 
 async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResponse:
@@ -416,7 +388,7 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
 
 
 # ---------------------------------------------------------------------------
-# /chat — non-interactive call for HA conversation agent
+# /chat ΓÇö non-interactive call for HA conversation agent
 # ---------------------------------------------------------------------------
 
 def _run_copilot_chat(prompt: str) -> str:
@@ -532,7 +504,7 @@ async def _main() -> None:
     logger.info("ha_mcp_bridge listening on %s:%s  copilot=%s",
                 HOST, PORT, copilot_ok)
     if not copilot_ok:
-        logger.warning("copilot binary not available — PTY will show an error")
+        logger.warning("copilot binary not available ΓÇö PTY will show an error")
     while True:
         await asyncio.sleep(3600)
 
