@@ -1,45 +1,39 @@
-"""HA MCP Bridge add-on entry point.
+"""HA MCP Bridge add-on — terminal pipe to gh copilot.
 
-HTTP endpoints
---------------
-GET  /            → serve chat UI (static/index.html)
-GET  /health      → JSON health/uptime (polled by HA integration)
-POST /chat        → proxy to GitHub Copilot chat completions API
-POST /auth/device → start GitHub device-flow; returns {user_code, verification_uri, …}
-GET  /auth/status → {authenticated: bool, username: str|null}
-POST /auth/poll   → poll for token after user approves; returns {success: bool}
-POST /auth/revoke → delete stored token
+How it works
+------------
+All GitHub auth and Copilot API access is delegated to the official `gh` CLI.
 
-Supervisor discovery
---------------------
-On startup the add-on POSTs to the Supervisor /discovery endpoint so that HA
-creates a config flow (async_step_hassio).  The "discovery" key in config.json
-is only an allowlist — it does NOT fire automatically.
+  Auth:  POST /auth/start   -> runs `gh auth login --web --skip-ssh-key` and
+                               captures the one-time device code + URL from
+                               gh's stdout so the web UI can display them.
+         GET  /auth/status  -> `gh auth status`
 
-Ingress
--------
-When accessed via HA Supervisor ingress the Supervisor proxy strips the ingress
-path prefix before forwarding, so the add-on always sees plain paths like
-/health, /chat, etc.  The chat UI uses window.location to compute the correct
-base URL for its API calls, so it works transparently under both direct access
-and ingress.
+  Chat:  POST /chat         -> runs `gh copilot suggest -t shell "<prompt>"`
+                               as a subprocess; stdout/stderr piped back as
+                               JSON.  `gh` handles the Copilot token exchange
+                               internally using its own stored OAuth token.
+
+  GET /              -> terminal web UI (static/index.html)
+  GET /health        -> JSON health (polled by HA integration)
+
+GH_CONFIG_DIR is set to /data/gh so authentication persists across add-on
+restarts.  On first start the entrypoint copies the bundled gh-copilot
+extension binaries into /data/gh/extensions so the user does not need
+network access at runtime.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
-import sys
+import subprocess
+import threading
 import time
 import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-
-# auth.py and copilot.py live in the same directory as main.py (/app).
-sys.path.insert(0, str(Path(__file__).parent))
-import auth
-import copilot
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ha_mcp_bridge")
@@ -47,10 +41,39 @@ logger = logging.getLogger("ha_mcp_bridge")
 OPTIONS_PATH = Path("/data/options.json")
 STATIC_DIR = Path(__file__).parent / "static"
 SUPERVISOR_API = "http://supervisor"
+GH_CONFIG_DIR = "/data/gh"
+GH_EXT_SRC = Path("/app/gh-extensions/extensions")
 start_time = time.time()
 
-# Supervisor injects this token into every add-on automatically.
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _gh_env() -> dict:
+    """Return environment for gh subprocess calls."""
+    env = {**os.environ, "GH_CONFIG_DIR": GH_CONFIG_DIR, "NO_COLOR": "1"}
+    env.pop("GH_TOKEN", None)  # let gh use its own stored token
+    return env
+
+
+def _install_extensions() -> None:
+    """Copy bundled extension binaries into /data/gh/extensions if needed."""
+    if not GH_EXT_SRC.exists():
+        return
+    dest = Path(GH_CONFIG_DIR) / "extensions"
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        import shutil
+        for item in GH_EXT_SRC.iterdir():
+            target = dest / item.name
+            if not target.exists():
+                shutil.copytree(str(item), str(target))
+                logger.info("Installed gh extension: %s", item.name)
+    except Exception as exc:
+        logger.warning("Failed to copy gh extensions: %s", exc)
 
 
 def load_options() -> dict:
@@ -59,7 +82,6 @@ def load_options() -> dict:
     try:
         return json.loads(OPTIONS_PATH.read_text())
     except json.JSONDecodeError:
-        logger.warning("Unable to decode options.json, falling back to defaults")
         return {}
 
 
@@ -69,20 +91,8 @@ PORT = int(OPTIONS.get("port", 8099))
 
 
 def register_discovery() -> None:
-    """POST to Supervisor /discovery so HA fires async_step_hassio.
-
-    The "discovery" key in config.json only *permits* this call — it does NOT
-    fire automatically.  The add-on must actively register every time it starts.
-
-    Supervisor validates the service name against config.json "discovery" list,
-    then forwards the payload to HA core which creates a config flow with
-    context={"source": SOURCE_HASSIO} → calls async_step_hassio.
-    """
     if not SUPERVISOR_TOKEN:
-        logger.warning(
-            "SUPERVISOR_TOKEN not set — skipping discovery registration. "
-            "Expected in local dev; under Supervisor this token is always present."
-        )
+        logger.warning("SUPERVISOR_TOKEN not set — skipping discovery registration.")
         return
 
     payload = json.dumps({
@@ -103,16 +113,142 @@ def register_discovery() -> None:
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read())
             uuid = body.get("data", {}).get("uuid", "unknown")
-            logger.info("Discovery registered with Supervisor: uuid=%s", uuid)
+            logger.info("Discovery registered: uuid=%s", uuid)
     except Exception as exc:
-        logger.error("Failed to register discovery with Supervisor: %s", exc)
+        logger.error("Discovery registration failed: %s", exc)
 
+
+# ---------------------------------------------------------------------------
+# Auth state (shared between handler threads)
+# ---------------------------------------------------------------------------
+
+_auth_proc: subprocess.Popen | None = None
+_auth_output_lines: list[str] = []
+_auth_lock = threading.Lock()
+
+
+def _auth_reader(proc: subprocess.Popen) -> None:
+    """Background thread: read gh auth login output and stash lines."""
+    for raw in proc.stdout:
+        line = raw.rstrip()
+        logger.info("[gh auth] %s", line)
+        with _auth_lock:
+            _auth_output_lines.append(line)
+    proc.wait()
+
+
+def start_auth_login() -> dict:
+    """Spawn `gh auth login --web --skip-ssh-key` and capture device code."""
+    global _auth_proc, _auth_output_lines
+
+    # Kill any previous flow
+    with _auth_lock:
+        if _auth_proc and _auth_proc.poll() is None:
+            _auth_proc.kill()
+        _auth_output_lines = []
+
+    proc = subprocess.Popen(
+        [
+            "gh", "auth", "login",
+            "--hostname", "github.com",
+            "--git-protocol", "https",
+            "--web",
+            "--skip-ssh-key",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=_gh_env(),
+        text=True,
+    )
+    with _auth_lock:
+        _auth_proc = proc
+
+    t = threading.Thread(target=_auth_reader, args=(proc,), daemon=True)
+    t.start()
+
+    # Give gh a moment to print the device code
+    time.sleep(3)
+    with _auth_lock:
+        lines = list(_auth_output_lines)
+
+    # Parse code + URL from gh output lines like:
+    #   ! First copy your one-time code: XXXX-XXXX
+    #   - Open this URL to continue in your web browser: https://github.com/login/device
+    code, url = "", "https://github.com/login/device"
+    for line in lines:
+        if "one-time code" in line or "copy your" in line:
+            parts = line.split(":")
+            if len(parts) >= 2:
+                code = parts[-1].strip()
+        if "github.com/login/device" in line or "Open this URL" in line:
+            for part in line.split():
+                if part.startswith("https://"):
+                    url = part
+
+    return {"code": code, "url": url, "lines": lines}
+
+
+def get_auth_status() -> dict:
+    result = subprocess.run(
+        ["gh", "auth", "status", "--hostname", "github.com"],
+        capture_output=True, text=True, env=_gh_env(), timeout=10,
+    )
+    authed = result.returncode == 0
+    user = ""
+    for line in (result.stdout + result.stderr).splitlines():
+        if "Logged in to" in line or "as " in line:
+            parts = line.split(" as ")
+            if len(parts) > 1:
+                user = parts[-1].strip().lstrip("@")
+    return {"authenticated": authed, "username": user, "detail": result.stderr.strip()}
+
+
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
+
+def run_copilot_chat(prompt: str) -> str:
+    """Run `gh copilot suggest -t shell <prompt>` and return the response text.
+
+    `gh copilot suggest` is interactive (shows a selection menu at the end).
+    We pipe it stdin=DEVNULL so it cannot block waiting for terminal input;
+    when it tries to write the interactive menu to a non-TTY stdout it either
+    writes the plain text or exits. We collect all stdout/stderr and strip
+    ANSI codes before returning.
+    """
+    import re
+
+    result = subprocess.run(
+        ["gh", "copilot", "suggest", "-t", "shell", prompt],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=_gh_env(),
+        timeout=60,
+    )
+
+    combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
+
+    # Strip ANSI escape codes
+    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+    clean = ansi_escape.sub("", combined).strip()
+
+    if not clean:
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"gh copilot exited with code {result.returncode}. "
+                "Make sure you are signed in (use the Sign in button above)."
+            )
+        raise RuntimeError("gh copilot returned no output.")
+
+    return clean
+
+
+# ---------------------------------------------------------------------------
+# HTTP handler
+# ---------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     def _send_json(self, payload: dict, status: int = HTTPStatus.OK) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -136,102 +272,69 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
-    # ------------------------------------------------------------------
-    # GET
-    # ------------------------------------------------------------------
-
     def do_GET(self) -> None:
         path = self.path.split("?")[0]
 
         if path in ("/", "/index.html"):
-            # Serve the Copilot chat UI.
-            index = STATIC_DIR / "index.html"
-            if index.exists():
-                self._send_html(index.read_bytes())
-            else:
-                self._send_json({"error": "UI not found"}, HTTPStatus.NOT_FOUND)
+            idx = STATIC_DIR / "index.html"
+            self._send_html(idx.read_bytes() if idx.exists() else b"<h1>UI not found</h1>")
             return
 
         if path == "/health":
+            status = get_auth_status()
             self._send_json({
                 "status": "ok",
                 "uptime": round(time.time() - start_time, 2),
-                "authenticated": auth.is_authenticated(),
+                "authenticated": status["authenticated"],
                 "timestamp": time.time(),
             })
             return
 
         if path == "/auth/status":
-            self._send_json({
-                "authenticated": auth.is_authenticated(),
-                "username": auth.get_username() if auth.is_authenticated() else None,
-            })
+            self._send_json(get_auth_status())
             return
 
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
-    # ------------------------------------------------------------------
-    # POST
-    # ------------------------------------------------------------------
-
     def do_POST(self) -> None:
         path = self.path.split("?")[0]
 
-        # ── /chat ──────────────────────────────────────────────────────
         if path == "/chat":
             body = self._read_body()
-            messages = body.get("messages", [])
-            if not messages:
-                self._send_json({"error": "messages list is required"}, HTTPStatus.BAD_REQUEST)
+            prompt = str(body.get("prompt", "")).strip()
+            if not prompt:
+                self._send_json({"error": "prompt is required"}, HTTPStatus.BAD_REQUEST)
                 return
             try:
-                reply = copilot.chat(messages)
-                self._send_json({"response": reply})
+                reply = run_copilot_chat(prompt)
+                self._send_json({"output": reply})
             except RuntimeError as exc:
-                # Not-authenticated or API error — return as JSON so the UI
-                # can display it gracefully rather than crashing.
                 self._send_json({"error": str(exc)})
             except Exception as exc:
-                logger.exception("Unexpected error in /chat")
-                self._send_json({"error": f"Internal error: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                logger.exception("Error in /chat")
+                self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
-        # ── /auth/device ───────────────────────────────────────────────
-        if path == "/auth/device":
+        if path == "/auth/start":
             try:
-                flow = auth.start_device_flow()
-                self._send_json(flow)
+                result = start_auth_login()
+                self._send_json(result)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return
 
-        # ── /auth/poll ─────────────────────────────────────────────────
         if path == "/auth/poll":
-            body = self._read_body()
-            device_code = body.get("device_code", "")
-            if not device_code:
-                self._send_json({"error": "device_code required"}, HTTPStatus.BAD_REQUEST)
-                return
-            try:
-                result = auth.poll_device_token(device_code)
-                if result:
-                    auth.save_token(result)
-                    logger.info("GitHub auth completed successfully")
-                    self._send_json({"success": True})
-                else:
-                    # Still pending — tell the client to keep polling.
-                    self._send_json({"success": False, "pending": True})
-            except RuntimeError as exc:
-                # Terminal error (expired / denied).
-                self._send_json({"success": False, "error": str(exc)})
-            except Exception as exc:
-                self._send_json({"success": False, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
-            return
-
-        # ── /auth/revoke ───────────────────────────────────────────────
-        if path == "/auth/revoke":
-            auth.revoke()
-            self._send_json({"ok": True})
+            # Return buffered output lines from the running gh auth login process.
+            with _auth_lock:
+                lines = list(_auth_output_lines)
+                done = _auth_proc is None or _auth_proc.poll() is not None
+            status = get_auth_status() if done else {}
+            self._send_json({
+                "lines": lines,
+                "done": done,
+                "authenticated": status.get("authenticated", False),
+                "username": status.get("username", ""),
+            })
             return
 
         self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -240,16 +343,16 @@ class Handler(BaseHTTPRequestHandler):
         logger.debug(fmt, *args)
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def run() -> None:
-    # Register with Supervisor FIRST so HA starts the config flow
-    # while the HTTP server is coming up.
+    _install_extensions()
     register_discovery()
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    logger.info(
-        "ha_mcp_bridge listening on %s:%s  auth=%s",
-        HOST, PORT, auth.is_authenticated(),
-    )
+    logger.info("ha_mcp_bridge listening on %s:%s", HOST, PORT)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

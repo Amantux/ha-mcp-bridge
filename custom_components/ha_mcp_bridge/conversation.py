@@ -95,11 +95,7 @@ class HaMcpBridgeConversationAgent(AbstractConversationAgent):
 
         try:
             session = aiohttp_client.async_get_clientsession(self.hass)
-            payload = {
-                # Send only the most recent MAX_TURNS * 2 messages so we don't
-                # blow past the model's context window.
-                "messages": history[-(MAX_TURNS * 2):],
-            }
+            payload = {"prompt": user_input.text}
             async with session.post(
                 self._chat_url, json=payload, timeout=_CHAT_TIMEOUT
             ) as resp:
@@ -130,3 +126,4 @@ class HaMcpBridgeConversationAgent(AbstractConversationAgent):
             response=response,
             conversation_id=conv_id,
         )
+
