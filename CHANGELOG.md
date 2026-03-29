@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.4] - 2026-03-29
+### Add-on
+- **New: GitHub Copilot chat panel (ingress)**
+  The add-on now serves a full chat UI at its HTTP port.  With `"ingress": true`
+  in config.json, HA Supervisor creates a **Copilot** entry in the sidebar — no
+  external URL or port-forwarding needed.
+- **New: GitHub authentication built in.**
+  The chat UI walks you through the GitHub device-flow sign-in (the same flow
+  used by the VS Code Copilot extension).  Your OAuth token is persisted to
+  `/data/github_token.json` and survives add-on restarts.
+- **New API endpoints:** `/chat`, `/auth/device`, `/auth/status`, `/auth/poll`,
+  `/auth/revoke`.
+- **New files:** `auth.py` (device-flow + Copilot token exchange),
+  `copilot.py` (Copilot chat completions API client),
+  `static/index.html` (responsive dark-theme chat UI).
+
+### Integration
+- **New: HA conversation agent.**
+  After set-up the integration registers a Copilot conversation agent so it
+  appears in **Settings → Voice Assistants**.  Any HA conversation input
+  (text, voice, developer tools) is forwarded to Copilot and the reply is
+  returned inline.
+- `manifest.json`: added `"dependencies": ["conversation"]`.
+- `__init__.py`: calls `conversation.async_set_agent()` on load and
+  `async_unset_agent()` on unload.
+
 ## [0.1.3] - 2026-03-29
 - **Rebuilt from ha-basic-addon patterns.**
   Every file now follows ha-basic-addon v0.1.13 as the source of truth:

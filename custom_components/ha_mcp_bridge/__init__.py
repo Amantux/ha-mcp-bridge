@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client
 
 from .const import DOMAIN
+from .conversation import HaMcpBridgeConversationAgent
 from .coordinator import HaMcpBridgeDataUpdateCoordinator
 
 PLATFORMS = ["sensor"]
@@ -19,6 +21,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Register the Copilot conversation agent so it appears in
+    # Settings → Voice Assistants and answers in the HA conversation UI.
+    agent = HaMcpBridgeConversationAgent(hass, entry)
+    conversation.async_set_agent(hass, entry, agent)
+
     # Reload the config entry when the user changes options so the coordinator
     # picks up the new update_interval.
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
@@ -31,6 +38,9 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    # Unregister the conversation agent before unloading platforms.
+    conversation.async_unset_agent(hass, entry)
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok
