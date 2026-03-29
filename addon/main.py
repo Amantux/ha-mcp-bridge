@@ -324,14 +324,14 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
     master_fd, slave_fd = pty.openpty()
     fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 
-    # Spawn `copilot` with slave_fd as its controlling terminal.
-    # start_new_session=True creates a new process group / session so the
-    # slave_fd becomes the controlling TTY for the child.
+
+    # copilot IS the terminal app — spawn it directly in the PTY.
+    # The binary from npm is a Node.js script; _copilot_path() gives the exact
+    # path and _copilot_env() ensures node is findable via PATH.
+    copilot_bin = _copilot_path() or "copilot"
     env = _copilot_env()
-    # Running bare "copilot" exits immediately (just shows usage).
-    # Spawn a shell with copilot in PATH for a proper interactive session.
     proc = subprocess.Popen(
-        ["/bin/sh"],
+        [copilot_bin],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
