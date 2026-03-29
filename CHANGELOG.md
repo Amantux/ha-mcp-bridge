@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.10] - 2026-03-29
+### Add-on
+- **Fix: Docker build on Alpine (musl libc).** The `copilot` CLI binary is a
+  Node.js bundle linked against glibc. Added `gcompat` + `libc6-compat` to the
+  Alpine base so the binary runs on musl-libc systems.
+- **Fix: armv7 / build-time install failure.** The copilot install script has no
+  armv7 release; made the build-time `curl | bash` non-fatal (`|| echo …`) so the
+  image builds successfully on all arches. A runtime fallback in `main.py`
+  (`_ensure_copilot()`) retries the install on first startup for amd64/aarch64
+  if the build-time install was skipped.
+- **Fix: graceful error in terminal UI** when `copilot` binary is absent —
+  sends a readable error message over WebSocket instead of crashing.
+
 ## [0.1.9] - 2026-03-29
 ### Add-on
 - **Switch to new standalone GitHub Copilot CLI.**

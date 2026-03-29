@@ -198,15 +198,41 @@ def start_auth_login() -> dict:
 
 
 def _check_copilot() -> bool:
-    """Return True if the `copilot` binary is available."""
+    """Return True if the `copilot` binary is available and executable."""
     try:
         r = subprocess.run(["copilot", "--version"],
-                           capture_output=True, timeout=5)
+                           capture_output=True, timeout=10)
         return r.returncode == 0
     except FileNotFoundError:
         return False
     except Exception:
         return False
+
+
+def _ensure_copilot() -> None:
+    """Install the copilot binary at runtime if missing (build-time install
+    skipped on unsupported arches like armv7, or if network was unavailable)."""
+    if _check_copilot():
+        return
+    import platform
+    machine = platform.machine().lower()
+    # Only supported for x86_64 and aarch64
+    if machine not in ("x86_64", "amd64", "aarch64", "arm64"):
+        logger.warning("copilot binary not available for arch %s", machine)
+        return
+    logger.info("copilot binary missing — attempting runtime install…")
+    try:
+        r = subprocess.run(
+            ["bash", "-c",
+             "curl -fsSL https://gh.io/copilot-install | PREFIX=/usr/local bash"],
+            timeout=120,
+        )
+        if r.returncode == 0 and _check_copilot():
+            logger.info("copilot installed successfully")
+        else:
+            logger.warning("copilot install returned %s", r.returncode)
+    except Exception as exc:
+        logger.warning("copilot runtime install failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +243,15 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
     """Bridge xterm.js to a real PTY running the GitHub Copilot CLI."""
     ws = aiohttp.web.WebSocketResponse()
     await ws.prepare(request)
+
+    if not _check_copilot():
+        await ws.send_str(
+            "\r\n\x1b[31m[ha-mcp-bridge] ERROR: 'copilot' binary not found.\x1b[0m\r\n"
+            "Architecture may be unsupported (armv7) or install failed at build time.\r\n"
+            "Check add-on logs for details.\r\n"
+        )
+        await ws.close()
+        return ws
 
     master_fd, slave_fd = pty.openpty()
     fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
@@ -406,6 +441,10 @@ def make_app() -> aiohttp.web.Application:
 
 async def _main() -> None:
     register_discovery()
+    loop = asyncio.get_running_loop()
+    # Ensure copilot binary exists (runtime fallback for arches where the
+    # build-time install was skipped, e.g., armv7 or offline builds).
+    await loop.run_in_executor(None, _ensure_copilot)
     app = make_app()
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
@@ -414,7 +453,7 @@ async def _main() -> None:
     copilot_ok = _check_copilot()
     logger.info("ha_mcp_bridge listening on %s:%s  copilot=%s", HOST, PORT, copilot_ok)
     if not copilot_ok:
-        logger.warning("'copilot' binary not found in PATH — check Dockerfile build")
+        logger.warning("'copilot' binary not available — PTY terminal will show an error")
     while True:
         await asyncio.sleep(3600)
 

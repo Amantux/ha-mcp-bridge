@@ -3,15 +3,19 @@ FROM ${BUILD_FROM}
 
 WORKDIR /app
 
-# Install gh CLI (for auth), curl + bash (for copilot install), git.
-RUN apk add --no-cache github-cli git curl bash
+# Runtime deps:
+# - github-cli: gh auth (token storage)
+# - curl + bash: copilot install script
+# - gcompat + libc6-compat: glibc shim so the Node.js-bundled copilot binary
+#   runs on Alpine (which uses musl libc by default)
+RUN apk add --no-cache github-cli git curl bash gcompat libc6-compat
 
-# Install the new standalone GitHub Copilot CLI.
-# This replaces the deprecated gh-copilot extension.
-# https://github.com/github/copilot-cli
-# The install script detects linux/amd64|arm64|armv7 and places
-# the `copilot` binary in /usr/local/bin/copilot.
-RUN curl -fsSL https://gh.io/copilot-install | PREFIX=/usr/local bash
+# Install the standalone GitHub Copilot CLI.
+# The install script downloads copilot-linux-{x64,arm64}.tar.gz from GitHub
+# Releases.  armv7 is not published — we allow failure so the build succeeds
+# on all arches; main.py will report the binary as missing at runtime.
+RUN curl -fsSL https://gh.io/copilot-install | PREFIX=/usr/local bash || \
+    echo "copilot install skipped (unsupported arch or network unavailable)"
 
 COPY addon/run.sh addon/main.py addon/requirements.txt ./
 COPY addon/static/ ./static/
