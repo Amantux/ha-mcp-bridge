@@ -3,27 +3,32 @@
 Architecture
 ------------
 aiohttp on port 8099:
-  GET  /              xterm.js UI
+  GET  /              xterm.js terminal UI
   GET  /ws            WebSocket <-> PTY running `copilot`
-  GET  /health        JSON health (polled by HA integration)
-  GET  /auth/status   {authenticated, username} via gh auth status
-  POST /auth/start    start `gh auth login --web`; return {code, url}
-  POST /auth/poll     return buffered lines + done/authenticated
-  POST /chat          non-interactive for HA conversation agent
+  GET  /health        JSON health
+  GET  /auth/status   {authenticated, username, copilot_available}
+  POST /auth/start    start `gh auth login`; return {code, url, lines}
+  POST /auth/poll     poll auth progress; return {lines, done, authenticated}
+  POST /chat          non-interactive Copilot call for HA conversation agent
 
-WebSocket <-> PTY
------------------
-os.fork() + os.execvpe() gives `copilot` a real PTY so it renders its
-full TUI (animated banner, slash commands, model selector, etc.).
-loop.add_reader() pipes master_fd -> WebSocket bytes without blocking.
-Resize protocol: first byte 0x01 + struct.pack('>HH', rows, cols).
+PTY bridge (no fork)
+--------------------
+Uses subprocess.Popen(stdin=slave, stdout=slave, stderr=slave) instead of
+os.fork() + os.execvpe() — avoids DeprecationWarning in multi-threaded
+asyncio ("This process is multi-threaded, use of fork() may lead to
+deadlocks") and is safe with aiohttp's thread-pool executor.
 
-Auth
-----
-gh auth login stores an OAuth token in GH_CONFIG_DIR=/data/gh.
-`copilot` has its own auth via `/login` slash command inside the TUI.
-GH_TOKEN is forwarded to `copilot` from the gh-stored token so the
-user only has to authenticate once when possible.
+Resize protocol (binary WebSocket frames):
+  first byte 0x01 + big-endian uint16 rows + uint16 cols
+
+Auth flow
+---------
+1. UI loads: polls /auth/status.
+   - If not authed with gh: renders an inline device-code card.
+   - User clicks "Sign in with GitHub" → POST /auth/start → shows code + URL.
+   - UI polls /auth/poll every 2 s; when done it auto-connects the terminal.
+2. After gh auth the stored token is forwarded to `copilot` as GH_TOKEN so
+   the copilot CLI can skip its own /login on first launch.
 """
 from __future__ import annotations
 
@@ -48,14 +53,14 @@ import aiohttp.web
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ha_mcp_bridge")
 
-OPTIONS_PATH   = Path("/data/options.json")
-STATIC_DIR     = Path(__file__).parent / "static"
-SUPERVISOR_API = "http://supervisor"
-GH_CONFIG_DIR  = "/data/gh"
-start_time     = time.time()
+OPTIONS_PATH     = Path("/data/options.json")
+STATIC_DIR       = Path(__file__).parent / "static"
+SUPERVISOR_API   = "http://supervisor"
+GH_CONFIG_DIR    = "/data/gh"
+start_time       = time.time()
 
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
-ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+ANSI             = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
 # ---------------------------------------------------------------------------
@@ -98,41 +103,45 @@ def register_discovery() -> None:
 
 
 # ---------------------------------------------------------------------------
-# gh / copilot helpers
+# gh / copilot env helpers
 # ---------------------------------------------------------------------------
 
 def _gh_env() -> dict:
-    """Environment for gh subprocess calls."""
+    """Env for gh CLI subprocess calls (no GH_TOKEN so gh uses its own store)."""
     env = {**os.environ, "GH_CONFIG_DIR": GH_CONFIG_DIR, "NO_COLOR": "1"}
     env.pop("GH_TOKEN", None)
     return env
 
 
-def _copilot_env() -> dict:
-    """Environment for the copilot PTY — pass stored gh token so copilot
-    can authenticate automatically without requiring /login."""
-    env = {**os.environ, "GH_CONFIG_DIR": GH_CONFIG_DIR,
-           "TERM": "xterm-256color", "COLORTERM": "truecolor"}
-    # Try to forward the gh OAuth token so copilot picks it up.
-    token = _gh_token()
-    if token:
-        env["GH_TOKEN"] = token
-        env["GITHUB_TOKEN"] = token
-    return env
-
-
 def _gh_token() -> str | None:
-    """Return the OAuth token stored by `gh auth`."""
+    """Return the OAuth token stored by `gh auth`, or None."""
     try:
         r = subprocess.run(
             ["gh", "auth", "token", "--hostname", "github.com"],
             capture_output=True, text=True, env=_gh_env(), timeout=5,
         )
         t = r.stdout.strip()
-        return t if t else None
+        return t or None
     except Exception:
         return None
 
+
+def _copilot_env() -> dict:
+    """Env for the copilot PTY — forward gh token when available."""
+    env = {**os.environ,
+           "GH_CONFIG_DIR": GH_CONFIG_DIR,
+           "TERM":          "xterm-256color",
+           "COLORTERM":     "truecolor"}
+    token = _gh_token()
+    if token:
+        env["GH_TOKEN"]     = token
+        env["GITHUB_TOKEN"] = token
+    return env
+
+
+# ---------------------------------------------------------------------------
+# Auth status / device-flow helpers
+# ---------------------------------------------------------------------------
 
 def get_auth_status() -> dict:
     try:
@@ -144,19 +153,24 @@ def get_auth_status() -> dict:
         user = ""
         for line in (r.stdout + r.stderr).splitlines():
             if " as " in line:
-                user = line.split(" as ")[-1].strip().lstrip("@").split(" ")[0]
-        return {"authenticated": authed, "username": user}
+                user = line.split(" as ")[-1].strip().lstrip("@").split()[0]
+        return {
+            "authenticated":    authed,
+            "username":         user,
+            "copilot_available": _check_copilot(),
+        }
     except Exception as exc:
-        return {"authenticated": False, "username": "", "error": str(exc)}
+        return {"authenticated": False, "username": "",
+                "copilot_available": False, "error": str(exc)}
 
 
 _auth_proc:  subprocess.Popen | None = None
-_auth_lines: list[str] = []
-_auth_lock   = threading.Lock()
+_auth_lines: list[str]               = []
+_auth_lock                           = threading.Lock()
 
 
 def _auth_reader(proc: subprocess.Popen) -> None:
-    for raw in proc.stdout:
+    for raw in proc.stdout:  # type: ignore[union-attr]
         line = ANSI.sub("", raw).rstrip()
         logger.info("[gh auth] %s", line)
         with _auth_lock:
@@ -172,8 +186,10 @@ def start_auth_login() -> dict:
         _auth_lines = []
 
     proc = subprocess.Popen(
-        ["gh", "auth", "login", "--hostname", "github.com",
-         "--git-protocol", "https", "--web"],
+        ["gh", "auth", "login",
+         "--hostname",     "github.com",
+         "--git-protocol", "https",
+         "--web"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         env=_gh_env(), text=True,
     )
@@ -181,6 +197,7 @@ def start_auth_login() -> dict:
         _auth_proc = proc
     threading.Thread(target=_auth_reader, args=(proc,), daemon=True).start()
 
+    # Give the process a moment to emit the device code.
     time.sleep(3)
     with _auth_lock:
         lines = list(_auth_lines)
@@ -197,8 +214,24 @@ def start_auth_login() -> dict:
     return {"code": code, "url": url, "lines": lines}
 
 
+def poll_auth() -> dict:
+    with _auth_lock:
+        lines = list(_auth_lines)
+        done  = _auth_proc is None or _auth_proc.poll() is not None
+    s = get_auth_status() if done else {}
+    return {
+        "lines":         lines,
+        "done":          done,
+        "authenticated": s.get("authenticated", False),
+        "username":      s.get("username", ""),
+    }
+
+
+# ---------------------------------------------------------------------------
+# copilot binary helpers
+# ---------------------------------------------------------------------------
+
 def _check_copilot() -> bool:
-    """Return True if the `copilot` binary is available and executable."""
     try:
         r = subprocess.run(["copilot", "--version"],
                            capture_output=True, timeout=10)
@@ -210,13 +243,12 @@ def _check_copilot() -> bool:
 
 
 def _ensure_copilot() -> None:
-    """Install the copilot binary at runtime if missing (build-time install
-    skipped on unsupported arches like armv7, or if network was unavailable)."""
+    """Runtime fallback: install copilot binary if build-time install was
+    skipped (e.g., unsupported arch, offline build environment)."""
     if _check_copilot():
         return
     import platform
     machine = platform.machine().lower()
-    # Only supported for x86_64 and aarch64
     if machine not in ("x86_64", "amd64", "aarch64", "arm64"):
         logger.warning("copilot binary not available for arch %s", machine)
         return
@@ -228,50 +260,55 @@ def _ensure_copilot() -> None:
             timeout=120,
         )
         if r.returncode == 0 and _check_copilot():
-            logger.info("copilot installed successfully")
+            logger.info("copilot installed successfully at runtime")
         else:
-            logger.warning("copilot install returned %s", r.returncode)
+            logger.warning("copilot runtime install returned %s", r.returncode)
     except Exception as exc:
         logger.warning("copilot runtime install failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
-# WebSocket <-> PTY  (spawns `copilot`)
+# WebSocket <-> PTY  (subprocess.Popen — no os.fork())
 # ---------------------------------------------------------------------------
 
 async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResponse:
-    """Bridge xterm.js to a real PTY running the GitHub Copilot CLI."""
+    """Bridge xterm.js over WebSocket to a real PTY running `copilot`.
+
+    Uses subprocess.Popen with slave_fd as stdin/stdout/stderr so we get a
+    proper controlling TTY without calling os.fork() from a multi-threaded
+    asyncio process (which would trigger DeprecationWarning and can deadlock).
+    """
     ws = aiohttp.web.WebSocketResponse()
     await ws.prepare(request)
 
     if not _check_copilot():
-        await ws.send_str(
-            "\r\n\x1b[31m[ha-mcp-bridge] ERROR: 'copilot' binary not found.\x1b[0m\r\n"
-            "Architecture may be unsupported (armv7) or install failed at build time.\r\n"
-            "Check add-on logs for details.\r\n"
+        await ws.send_bytes(
+            b"\r\n\x1b[31m[ha-mcp-bridge] copilot binary not found.\x1b[0m\r\n"
+            b"Check add-on logs. The binary may be installing in the background;\r\n"
+            b"close and reopen this panel in ~30 seconds.\r\n"
         )
         await ws.close()
         return ws
 
+    # Open a PTY pair.
     master_fd, slave_fd = pty.openpty()
     fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 
-    pid = os.fork()
-    if pid == 0:                      # ── child ──
-        os.close(master_fd)
-        os.setsid()
-        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-        os.dup2(slave_fd, 0)
-        os.dup2(slave_fd, 1)
-        os.dup2(slave_fd, 2)
-        if slave_fd > 2:
-            os.close(slave_fd)
-        os.execvpe("copilot", ["copilot"], _copilot_env())
-        os._exit(1)
+    # Spawn `copilot` with slave_fd as its controlling terminal.
+    # start_new_session=True creates a new process group / session so the
+    # slave_fd becomes the controlling TTY for the child.
+    proc = subprocess.Popen(
+        ["copilot"],
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True,
+        start_new_session=True,
+        env=_copilot_env(),
+    )
+    os.close(slave_fd)   # parent no longer needs the slave end
 
-    # ── parent ──
-    os.close(slave_fd)
-    loop = asyncio.get_running_loop()
+    loop  = asyncio.get_running_loop()
     queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
     def _on_readable() -> None:
@@ -300,12 +337,15 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
     try:
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.BINARY:
-                data = msg.data
-                # Resize: 0x01 + big-endian uint16 rows + uint16 cols
+                data: bytes = msg.data
+                # Resize frame: 0x01 + big-endian uint16 rows + uint16 cols
                 if len(data) >= 5 and data[0] == 0x01:
                     rows, cols = struct.unpack(">HH", data[1:5])
-                    fcntl.ioctl(master_fd, termios.TIOCSWINSZ,
-                                struct.pack("HHHH", rows, cols, 0, 0))
+                    try:
+                        fcntl.ioctl(master_fd, termios.TIOCSWINSZ,
+                                    struct.pack("HHHH", rows, cols, 0, 0))
+                    except OSError:
+                        pass
                 else:
                     try:
                         os.write(master_fd, data)
@@ -326,20 +366,24 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
         except OSError:
             pass
         try:
-            os.kill(pid, 9)
-            os.waitpid(pid, 0)
-        except OSError:
+            proc.kill()
+            proc.wait(timeout=3)
+        except Exception:
             pass
 
     return ws
 
 
 # ---------------------------------------------------------------------------
-# /chat — non-interactive for HA conversation agent
+# /chat — non-interactive call for HA conversation agent
 # ---------------------------------------------------------------------------
 
 def _run_copilot_chat(prompt: str) -> str:
-    """Send a single prompt to `copilot` non-interactively via stdin."""
+    if not _check_copilot():
+        raise RuntimeError(
+            "GitHub Copilot CLI is not available. "
+            "Please authenticate via the Copilot panel in the HA sidebar."
+        )
     env = {**_copilot_env(), "NO_COLOR": "1"}
     result = subprocess.run(
         ["copilot", "--no-tty"],
@@ -353,8 +397,8 @@ def _run_copilot_chat(prompt: str) -> str:
     clean = ANSI.sub("", combined).strip()
     if not clean and result.returncode != 0:
         raise RuntimeError(
-            "copilot CLI failed. Make sure you have signed in via the Copilot "
-            "panel in the HA sidebar (/login command inside the terminal)."
+            "Copilot CLI returned no output. Sign in via the sidebar panel "
+            "using the /login command."
         )
     return clean or "(no response)"
 
@@ -368,8 +412,8 @@ async def handle_chat(request: aiohttp.web.Request) -> aiohttp.web.Response:
     if not prompt:
         return aiohttp.web.json_response({"error": "prompt required"}, status=400)
     try:
-        loop = asyncio.get_running_loop()
-        output = await loop.run_in_executor(None, _run_copilot_chat, prompt)
+        output = await asyncio.get_running_loop().run_in_executor(
+            None, _run_copilot_chat, prompt)
         return aiohttp.web.json_response({"output": output})
     except RuntimeError as exc:
         return aiohttp.web.json_response({"error": str(exc)})
@@ -379,7 +423,7 @@ async def handle_chat(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 
 # ---------------------------------------------------------------------------
-# HTTP routes
+# HTTP handlers
 # ---------------------------------------------------------------------------
 
 async def handle_index(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -392,16 +436,18 @@ async def handle_index(request: aiohttp.web.Request) -> aiohttp.web.Response:
 async def handle_health(request: aiohttp.web.Request) -> aiohttp.web.Response:
     s = get_auth_status()
     return aiohttp.web.json_response({
-        "status": "ok",
-        "uptime": round(time.time() - start_time, 2),
-        "authenticated": s["authenticated"],
-        "copilot_available": _check_copilot(),
-        "timestamp": time.time(),
+        "status":            "ok",
+        "uptime":            round(time.time() - start_time, 2),
+        "authenticated":     s["authenticated"],
+        "copilot_available": s.get("copilot_available", False),
+        "timestamp":         time.time(),
     })
 
 
 async def handle_auth_status(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    return aiohttp.web.json_response(get_auth_status())
+    loop = asyncio.get_running_loop()
+    status = await loop.run_in_executor(None, get_auth_status)
+    return aiohttp.web.json_response(status)
 
 
 async def handle_auth_start(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -411,15 +457,7 @@ async def handle_auth_start(request: aiohttp.web.Request) -> aiohttp.web.Respons
 
 
 async def handle_auth_poll(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    with _auth_lock:
-        lines = list(_auth_lines)
-        done = _auth_proc is None or _auth_proc.poll() is not None
-    s = get_auth_status() if done else {}
-    return aiohttp.web.json_response({
-        "lines": lines, "done": done,
-        "authenticated": s.get("authenticated", False),
-        "username": s.get("username", ""),
-    })
+    return aiohttp.web.json_response(poll_auth())
 
 
 # ---------------------------------------------------------------------------
@@ -442,8 +480,7 @@ def make_app() -> aiohttp.web.Application:
 async def _main() -> None:
     register_discovery()
     loop = asyncio.get_running_loop()
-    # Ensure copilot binary exists (runtime fallback for arches where the
-    # build-time install was skipped, e.g., armv7 or offline builds).
+    # Ensure copilot binary (runtime fallback for skipped build-time installs).
     await loop.run_in_executor(None, _ensure_copilot)
     app = make_app()
     runner = aiohttp.web.AppRunner(app)
@@ -451,9 +488,10 @@ async def _main() -> None:
     site = aiohttp.web.TCPSite(runner, HOST, PORT)
     await site.start()
     copilot_ok = _check_copilot()
-    logger.info("ha_mcp_bridge listening on %s:%s  copilot=%s", HOST, PORT, copilot_ok)
+    logger.info("ha_mcp_bridge listening on %s:%s  copilot=%s",
+                HOST, PORT, copilot_ok)
     if not copilot_ok:
-        logger.warning("'copilot' binary not available — PTY terminal will show an error")
+        logger.warning("copilot binary not available — PTY will show an error")
     while True:
         await asyncio.sleep(3600)
 

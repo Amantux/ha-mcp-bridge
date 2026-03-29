@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.11] - 2026-03-29
+### Add-on
+- **Fix: removed `os.fork()` — no more DeprecationWarning.**
+  PTY bridge now uses `subprocess.Popen(stdin=slave_fd, stdout=slave_fd,
+  stderr=slave_fd, start_new_session=True)` which is safe in multi-threaded
+  asyncio and eliminates the *"use of fork() may lead to deadlocks"* warning.
+- **Improved auth workflow.**
+  The sidebar panel checks `gh auth status` on load. If not authenticated it
+  shows a clean GitHub-branded card with a "Continue with GitHub" button.
+  Clicking it triggers `gh auth login --web`, displays the one-time device
+  code inline (click to copy), a direct link to `github.com/login/device`,
+  and polls for completion every 2.5 s. Once authorized the terminal spawns
+  automatically. The overlay is skipped entirely if already authenticated.
+- **Status bar.** Connection state (dot + label) and the signed-in `@username`
+  are always visible at the top of the panel.
+
 ## [0.1.10] - 2026-03-29
 ### Add-on
 - **Fix: Docker build on Alpine (musl libc).** The `copilot` CLI binary is a
