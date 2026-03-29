@@ -232,70 +232,115 @@ def poll_auth() -> dict:
 # ---------------------------------------------------------------------------
 
 def _check_copilot() -> bool:
+    """Return True only if `copilot` binary is present AND executes cleanly."""
+    path = subprocess.run(["which", "copilot"],
+                          capture_output=True, text=True).stdout.strip()
+    if not path:
+        logger.debug("copilot: not found in PATH")
+        return False
+    # Binary is present — can it actually run?
     try:
         r = subprocess.run(["copilot", "--version"],
                            capture_output=True, timeout=10)
-        return r.returncode == 0
+        if r.returncode == 0:
+            ver = (r.stdout or r.stderr or b"").decode(errors="replace").strip().splitlines()
+            logger.debug("copilot version: %s", ver[0] if ver else "?")
+            return True
+        logger.warning("copilot --version exited %s (binary may need gcompat)",
+                       r.returncode)
+        return False
     except FileNotFoundError:
         return False
-    except Exception:
+    except Exception as exc:
+        logger.warning("copilot --version failed: %s", exc)
         return False
+
+
+def _install_copilot_binary(dl_arch: str) -> bool:
+    """Download the copilot tarball and install to /usr/local/bin/copilot.
+
+    Uses `tar` via subprocess (more reliable across Python versions than
+    Python's tarfile module with mutated member names).
+    Returns True on success.
+    """
+    url = (
+        "https://github.com/github/copilot-cli/releases/latest/download/"
+        f"copilot-linux-{dl_arch}.tar.gz"
+    )
+    import tempfile
+    logger.info("Downloading copilot from %s", url)
+    with tempfile.TemporaryDirectory() as tmp:
+        tarball = os.path.join(tmp, "copilot.tar.gz")
+
+        # Download
+        dl = subprocess.run(
+            ["curl", "-fsSL", "--retry", "3", "--retry-delay", "2",
+             "-o", tarball, url],
+            timeout=180,
+        )
+        if dl.returncode != 0:
+            raise RuntimeError(f"curl download failed (exit {dl.returncode})")
+        size = os.path.getsize(tarball)
+        logger.info("Downloaded %d bytes", size)
+        if size < 1_000_000:
+            raise RuntimeError(f"Tarball suspiciously small: {size} bytes")
+
+        # Verify it's a valid gzip before extracting
+        chk = subprocess.run(["tar", "-tzf", tarball], capture_output=True)
+        if chk.returncode != 0:
+            raise RuntimeError("Downloaded file is not a valid gzip tarball")
+        files_in_tar = chk.stdout.decode(errors="replace").strip().splitlines()
+        logger.info("Tarball contents: %s", files_in_tar)
+
+        # Extract directly to /usr/local/bin/
+        # The tarball has a single top-level file named `copilot`.
+        ex = subprocess.run(
+            ["tar", "-xzf", tarball, "-C", "/usr/local/bin/"],
+            capture_output=True,
+        )
+        if ex.returncode != 0:
+            raise RuntimeError(
+                f"tar extract failed: {ex.stderr.decode(errors='replace')}")
+
+    # Ensure executable bit
+    binary = "/usr/local/bin/copilot"
+    if not os.path.isfile(binary):
+        raise RuntimeError(f"Expected {binary} after extraction but not found")
+    os.chmod(binary, 0o755)
+    return True
 
 
 def _ensure_copilot() -> None:
-    """Runtime fallback: install copilot binary if build-time install was
-    skipped (e.g., unsupported arch, offline build environment).
+    """Install the copilot binary if missing or non-functional.
 
-    Downloads the tarball directly instead of piping through the install
-    script, which runs SHA256 validation that exits 1 on partial downloads
-    or network glitches.
+    Runs at startup as a runtime fallback for build-time install failures
+    (e.g., armv7 arch, offline network, checksum failures).
     """
     if _check_copilot():
+        logger.info("copilot binary OK")
         return
-    import platform, tarfile, tempfile
+    import platform
     machine  = platform.machine().lower()
     arch_map = {"x86_64": "x64", "amd64": "x64",
                 "aarch64": "arm64", "arm64": "arm64"}
     dl_arch  = arch_map.get(machine)
     if not dl_arch:
-        logger.warning("copilot binary not available for arch %s — skipping", machine)
+        logger.warning("No copilot release for arch '%s' — PTY will be unavailable",
+                       machine)
         return
-
-    url = (
-        "https://github.com/github/copilot-cli/releases/latest/download/"
-        f"copilot-linux-{dl_arch}.tar.gz"
-    )
-    logger.info("copilot binary missing — downloading %s", url)
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            tarball = os.path.join(tmp, "copilot.tar.gz")
-            r = subprocess.run(
-                ["curl", "-fsSL", "-o", tarball, url],
-                timeout=120,
-            )
-            if r.returncode != 0:
-                raise RuntimeError(f"curl returned {r.returncode}")
-
-            with tarfile.open(tarball, "r:gz") as tf:
-                binary_member = next(
-                    (m for m in tf.getmembers()
-                     if os.path.basename(m.name) == "copilot" and m.isfile()),
-                    None,
-                )
-                if binary_member is None:
-                    raise RuntimeError("copilot binary not found in tarball")
-                binary_member.name = "copilot"
-                tf.extract(binary_member, "/usr/local/bin/")
-
-            os.chmod("/usr/local/bin/copilot", 0o755)
-
+        _install_copilot_binary(dl_arch)
         if _check_copilot():
-            logger.info("copilot installed successfully at runtime")
+            logger.info("copilot installed successfully (runtime)")
         else:
-            logger.warning("copilot extracted but binary check failed "
-                           "(possible glibc/musl incompatibility)")
+            logger.error(
+                "copilot binary installed but won't run. "
+                "This usually means the glibc shim (gcompat) is missing. "
+                "Check that the Dockerfile includes: "
+                "apk add gcompat libc6-compat"
+            )
     except Exception as exc:
-        logger.warning("copilot runtime install failed: %s", exc)
+        logger.error("copilot runtime install failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

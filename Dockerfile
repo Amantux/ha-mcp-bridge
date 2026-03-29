@@ -4,36 +4,33 @@ FROM ${BUILD_FROM}
 WORKDIR /app
 
 # Runtime deps:
-# - github-cli:   gh auth (token storage / device-flow)
-# - curl + bash:  copilot download
-# - gcompat + libc6-compat: glibc shim for Node.js-bundled copilot binary on Alpine (musl)
+# - github-cli:         gh auth (device-flow / token storage)
+# - curl + bash:        copilot download + scripts
+# - gcompat:            glibc ABI compatibility shim (needed by Node.js-bundled copilot)
+# - libc6-compat:       /lib/libc.musl-* → libgcc_s.so.1 symlinks
 RUN apk add --no-cache github-cli git curl bash gcompat libc6-compat
 
-# Install the standalone GitHub Copilot CLI directly from GitHub Releases.
-# We bypass the install script (which runs SHA256 validation that can fail on
-# flaky networks) and download + extract the tarball ourselves.
-# armv7 has no published release — we allow failure so the build succeeds;
-# main.py will retry at runtime for amd64 / aarch64.
+# Install the standalone GitHub Copilot CLI.
+# Downloads copilot-linux-{x64,arm64}.tar.gz directly from GitHub Releases
+# (no install script — avoids SHA256 checksum step that exits 1 on flaky nets).
+# The tarball contains a single top-level file named `copilot`.
+# armv7 has no release — we gracefully skip; main.py retries at runtime.
 RUN set -e; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
       x86_64|amd64)    DL_ARCH="x64"   ;; \
       aarch64|arm64)   DL_ARCH="arm64" ;; \
-      *) echo "Arch $ARCH has no copilot release — skipping"; exit 0 ;; \
+      *)               echo "Arch $ARCH: no copilot release, skipping"; exit 0 ;; \
     esac; \
     URL="https://github.com/github/copilot-cli/releases/latest/download/copilot-linux-${DL_ARCH}.tar.gz"; \
-    echo "Downloading $URL"; \
-    curl -fsSL "$URL" -o /tmp/copilot.tar.gz; \
-    tar -xzf /tmp/copilot.tar.gz -C /tmp; \
-    BINARY=$(find /tmp -maxdepth 3 -name "copilot" -type f | head -1); \
-    if [ -n "$BINARY" ]; then \
-      mv "$BINARY" /usr/local/bin/copilot; \
-      chmod +x /usr/local/bin/copilot; \
-      echo "copilot installed: $(copilot --version 2>&1 | head -1)"; \
-    else \
-      echo "ERROR: copilot binary not found in tarball"; exit 1; \
-    fi; \
-    rm -f /tmp/copilot.tar.gz
+    echo "==> Downloading $URL"; \
+    curl -fsSL --retry 3 --retry-delay 2 "$URL" -o /tmp/copilot.tar.gz; \
+    echo "==> Downloaded $(wc -c < /tmp/copilot.tar.gz) bytes"; \
+    echo "==> Tarball contents: $(tar -tzf /tmp/copilot.tar.gz)"; \
+    tar -xzf /tmp/copilot.tar.gz -C /usr/local/bin/; \
+    chmod +x /usr/local/bin/copilot; \
+    rm -f /tmp/copilot.tar.gz; \
+    echo "==> copilot version: $(copilot --version 2>&1 | head -1 || echo 'version check failed (may need runtime glibc)')"
 
 COPY addon/run.sh addon/main.py addon/requirements.txt ./
 COPY addon/static/ ./static/
