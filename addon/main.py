@@ -107,19 +107,49 @@ def _gh_env() -> dict:
 
 
 def _install_extensions() -> None:
-    if not GH_EXT_SRC.exists():
-        return
+    """Ensure gh-copilot extension is available.
+
+    Try the bundled copy first (fast, no network). If that fails or was never
+    built, install from GitHub at runtime. This runs every startup but is a
+    no-op once the extension binary is present in GH_CONFIG_DIR/extensions/.
+    """
     import shutil
-    dest = Path(GH_CONFIG_DIR) / "extensions"
-    dest.mkdir(parents=True, exist_ok=True)
-    for item in GH_EXT_SRC.iterdir():
-        target = dest / item.name
-        if not target.exists():
-            try:
-                shutil.copytree(str(item), str(target))
-                logger.info("Installed gh extension: %s", item.name)
-            except Exception as exc:
-                logger.warning("Failed to copy %s: %s", item.name, exc)
+
+    # 1. Copy bundled binaries (put there at Docker build time) if present.
+    if GH_EXT_SRC.exists():
+        dest = Path(GH_CONFIG_DIR) / "extensions"
+        dest.mkdir(parents=True, exist_ok=True)
+        for item in GH_EXT_SRC.iterdir():
+            target = dest / item.name
+            if not target.exists():
+                try:
+                    shutil.copytree(str(item), str(target))
+                    logger.info("Installed bundled gh extension: %s", item.name)
+                except Exception as exc:
+                    logger.warning("Failed to copy %s: %s", item.name, exc)
+
+    # 2. Verify `gh copilot` actually works.
+    probe = subprocess.run(
+        ["gh", "copilot", "--version"],
+        capture_output=True, env=_gh_env(), timeout=10,
+    )
+    if probe.returncode == 0:
+        logger.info("gh-copilot extension ready: %s", probe.stdout.decode().strip())
+        return
+
+    # 3. Extension missing — install now (network available at runtime).
+    logger.info("gh-copilot extension not found — installing from GitHub...")
+    result = subprocess.run(
+        ["gh", "extension", "install", "github/gh-copilot", "--force"],
+        capture_output=True, text=True, env=_gh_env(), timeout=120,
+    )
+    if result.returncode == 0:
+        logger.info("gh-copilot extension installed successfully")
+    else:
+        logger.error(
+            "Failed to install gh-copilot extension: %s\n%s",
+            result.stdout, result.stderr,
+        )
 
 
 def get_auth_status() -> dict:
@@ -387,7 +417,10 @@ def make_app() -> aiohttp.web.Application:
 
 
 async def _main() -> None:
-    _install_extensions()
+    # Run extension install in a thread so it doesn't block the event loop.
+    # The HTTP server starts immediately; /ws will work once the extension is ready.
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _install_extensions)
     register_discovery()
     app = make_app()
     runner = aiohttp.web.AppRunner(app)
@@ -395,7 +428,6 @@ async def _main() -> None:
     site = aiohttp.web.TCPSite(runner, HOST, PORT)
     await site.start()
     logger.info("ha_mcp_bridge listening on %s:%s", HOST, PORT)
-    # Run forever
     while True:
         await asyncio.sleep(3600)
 
