@@ -1,0 +1,46 @@
+name: Validate & Release
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version consistency
+        run: |
+          ADDON_VER=$(jq -r .version config.json)
+          INTEG_VER=$(jq -r .version custom_components/ha_mcp_bridge/manifest.json)
+          echo "add-on: $ADDON_VER  integration: $INTEG_VER"
+          if [ "$ADDON_VER" != "$INTEG_VER" ]; then
+            echo "::error::Version mismatch: config.json=$ADDON_VER manifest.json=$INTEG_VER"
+            exit 1
+          fi
+
+      - name: Check translations exist
+        run: |
+          test -f custom_components/ha_mcp_bridge/translations/en.json \
+            || (echo "::error::translations/en.json missing" && exit 1)
+
+  release:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: ver
+        run: echo "version=$(jq -r .version config.json)" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          body_path: CHANGELOG.md
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

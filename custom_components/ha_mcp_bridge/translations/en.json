@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to HA MCP Bridge",
+        "data": {
+          "host": "Add-on host",
+          "port": "Port"
+        },
+        "data_description": {
+          "host": "Hostname or IP of the add-on (default: http://127.0.0.1 under Supervisor).",
+          "port": "TCP port the add-on is listening on (default 8099)."
+        }
+      },
+      "hassio_confirm": {
+        "title": "HA MCP Bridge discovered",
+        "description": "Set up Home Assistant to connect to the discovered add-on: **{addon}**?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect. Make sure the add-on is installed and running."
+    },
+    "abort": {
+      "already_configured": "This add-on is already configured.",
+      "cannot_connect": "Could not reach the add-on. Start it and try again from Settings \u2192 Devices & Services."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HA MCP Bridge options",
+        "data": {
+          "update_interval": "Poll interval (seconds)"
+        },
+        "data_description": {
+          "update_interval": "How often HA fetches the bridge status. Min 10 s, max 3600 s."
+        }
+      }
+    }
+  }
+}
