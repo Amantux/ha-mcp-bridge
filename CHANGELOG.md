@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.2] - 2026-03-29
+### Changed — add-on
+- **Rebuilt add-on from ha-basic-addon foundation.**
+  `addon/main.py` now uses the exact same s6-overlay-safe structure as
+  `ha-basic-addon`: no `asyncio`, no MCP probing in the add-on process.
+  The add-on is responsible for *one* thing: register Supervisor discovery
+  and serve `/health` + `/status`. This eliminates the s6-overlay startup
+  failure caused by the previous complex entry point.
+- `Dockerfile` mirrors `ha-basic-addon` exactly (`COPY requirements.txt`
+  before `main.py`, `EXPOSE 8099`).
+
+### Added — integration
+- **MCP server connection step in config flow.**
+  After the Supervisor discovery confirmation, users see a new `mcp_setup`
+  form where they can optionally provide an MCP server URL and bearer token.
+  The coordinator validates reachability at setup time and on every poll.
+  Leaving the URL blank skips MCP monitoring (safe default).
+- `McpAvailableSensor` — new sensor exposing `connected` / `unreachable` /
+  `not_configured` based on the coordinator's MCP probe result.
+- Options flow updated: users can change `mcp_url` and `mcp_token` after
+  setup without re-running the full config flow.
+
+### Changed — integration
+- Coordinator now polls add-on `/health` (not `/status`) as the primary
+  liveness check. MCP probing is done independently by the coordinator using
+  the URL stored in the config entry — not via the add-on process.
+- `BridgeStatusSensor` retained; `McpToolCountSensor` replaced by
+  `McpAvailableSensor` (simpler, more reliable).
+
 ## [0.1.1] - 2026-03-29
 - **Fix (critical): s6-overlay Dockerfile.**
   HA base images use s6-overlay as PID 1 (`ENTRYPOINT ["/init"]`). The previous

@@ -1,6 +1,6 @@
 {
   "name": "HA MCP Bridge",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "slug": "ha-mcp-bridge",
   "description": "Connects to Home Assistant's built-in MCP Server and bridges its tools back as discoverable integration data.",
   "url": "https://github.com/Amantux/ha-mcp-bridge",

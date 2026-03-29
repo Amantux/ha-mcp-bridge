@@ -1,21 +1,23 @@
 """HA MCP Bridge add-on.
 
+Identical structure to ha-basic-addon (the proven s6-overlay pattern).
+
 Responsibilities
 ----------------
 1. Register with Supervisor so HA fires async_step_hassio in the integration.
-2. Connect to Home Assistant's built-in MCP Server via the Supervisor Core-API
-   proxy (no user token required — Supervisor injects SUPERVISOR_TOKEN).
-3. Expose a local HTTP API so the custom integration can poll it.
+2. Expose /health and /status endpoints so the custom integration can poll.
+
+The MCP server connection is configured and probed by the *integration*
+(coordinator.py), not this add-on process.  This keeps the add-on simple
+and guarantees the s6-overlay service lifecycle works correctly.
 
 Endpoints
 ---------
-GET /health          basic liveness check
-GET /status          add-on status + MCP connection result (JSON)
+GET /health     liveness probe; returns {"status":"ok","uptime":<float>}
+GET /status     extended status including add-on version
 """
-
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -25,126 +27,76 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 _LOGGER = logging.getLogger("ha_mcp_bridge")
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 OPTIONS_PATH = Path("/data/options.json")
 SUPERVISOR_API = "http://supervisor"
+
+# Supervisor injects this token automatically — never configure it manually.
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 
-# HA Core API is reachable via the Supervisor proxy at /core/api/...
-# No long-lived token needed — SUPERVISOR_TOKEN is sufficient.
-CORE_API = f"{SUPERVISOR_API}/core/api"
-
-# HA MCP Server SSE endpoint (available when homeassistant/mcp_server is enabled).
-# We issue a lightweight OPTIONS / HEAD to check reachability rather than opening
-# the full SSE stream (which would block forever).
-MCP_ENDPOINT = f"{CORE_API}/mcp_server/sse"
-
 _start_time = time.time()
-_STATUS: dict = {"status": "starting", "mcp_available": False, "mcp_tools": [], "uptime": 0}
 
 
-def _supervisor_request(method: str, path: str, body: dict | None = None) -> dict:
-    """Make a synchronous request to the Supervisor / Core API."""
-    url = f"{SUPERVISOR_API}{path}"
-    data = json.dumps(body).encode() if body else None
+def _load_options() -> dict:
+    if not OPTIONS_PATH.exists():
+        return {}
+    try:
+        return json.loads(OPTIONS_PATH.read_text())
+    except json.JSONDecodeError:
+        _LOGGER.warning("Unable to decode options.json, using defaults.")
+        return {}
+
+
+_OPTIONS = _load_options()
+_PORT = int(_OPTIONS.get("port", 8099))
+
+
+def register_discovery() -> None:
+    """POST to Supervisor /discovery so HA fires async_step_hassio.
+
+    The "discovery" key in config.json is ONLY an allowlist.
+    The add-on MUST make this call on startup — it does NOT fire automatically.
+    Supervisor validates the service name then notifies HA core, which creates
+    a config flow with context={"source": SOURCE_HASSIO}.
+    """
+    if not SUPERVISOR_TOKEN:
+        _LOGGER.warning(
+            "SUPERVISOR_TOKEN not set — skipping discovery. "
+            "This is expected in local dev; under Supervisor the token is always present."
+        )
+        return
+
+    payload = json.dumps({
+        "service": "ha_mcp_bridge",
+        "config": {"host": "127.0.0.1", "port": _PORT},
+    }).encode("utf-8")
+
     req = urllib.request.Request(
-        url,
-        data=data,
-        method=method,
+        f"{SUPERVISOR_API}/discovery",
+        data=payload,
+        method="POST",
         headers={
             "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
-
-
-# ---------------------------------------------------------------------------
-# Supervisor discovery registration
-# ---------------------------------------------------------------------------
-
-def register_discovery(port: int) -> None:
-    """POST to Supervisor /discovery.
-
-    The "discovery" key in config.json is only an allowlist.
-    The add-on MUST make this call on startup or HA never fires async_step_hassio.
-    """
-    if not SUPERVISOR_TOKEN:
-        _LOGGER.warning("No SUPERVISOR_TOKEN — skipping discovery (not under Supervisor).")
-        return
-
     try:
-        result = _supervisor_request("POST", "/discovery", {
-            "service": "ha_mcp_bridge",
-            "config": {"host": "127.0.0.1", "port": port},
-        })
-        uuid = result.get("data", {}).get("uuid", "unknown")
-        _LOGGER.info("Supervisor discovery registered: uuid=%s", uuid)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read())
+            uuid = body.get("data", {}).get("uuid", "unknown")
+            _LOGGER.info("Discovery registered with Supervisor: uuid=%s", uuid)
     except Exception as exc:
-        _LOGGER.error("Failed to register Supervisor discovery: %s", exc)
+        _LOGGER.error("Failed to register discovery: %s", exc)
 
-
-# ---------------------------------------------------------------------------
-# MCP Server connectivity check
-# ---------------------------------------------------------------------------
-
-def probe_mcp_server() -> dict:
-    """Check whether HA's built-in MCP Server integration is reachable.
-
-    We call POST /api/mcp_server/sse with an initialize JSON-RPC message.
-    If HA's mcp_server component is enabled it responds with a valid JSON-RPC
-    result; if not, we get a 404 or connection error.
-
-    Returns a dict:
-        {"available": bool, "tools": list[str], "error": str | None}
-    """
-    if not SUPERVISOR_TOKEN:
-        return {"available": False, "tools": [], "error": "no_supervisor_token"}
-
-    # MCP initialize request (JSON-RPC 2.0)
-    init_payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "ha-mcp-bridge", "version": "0.1.0"},
-        },
-    }
-
-    try:
-        result = _supervisor_request("POST", "/core/api/mcp_server/sse", init_payload)
-        # A successful initialize returns {"jsonrpc":"2.0","id":1,"result":{...}}
-        if "result" in result:
-            _LOGGER.info("HA MCP Server reachable. Capabilities: %s", result["result"].get("capabilities"))
-            # Now list tools
-            tools_payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
-            tools_result = _supervisor_request("POST", "/core/api/mcp_server/sse", tools_payload)
-            tools = [t["name"] for t in tools_result.get("result", {}).get("tools", [])]
-            return {"available": True, "tools": tools, "error": None}
-        return {"available": False, "tools": [], "error": result.get("error", {}).get("message", "unexpected_response")}
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return {"available": False, "tools": [], "error": "mcp_server_not_enabled"}
-        return {"available": False, "tools": [], "error": f"http_{exc.code}"}
-    except Exception as exc:
-        return {"available": False, "tools": [], "error": str(exc)}
-
-
-# ---------------------------------------------------------------------------
-# HTTP server
-# ---------------------------------------------------------------------------
 
 class _Handler(BaseHTTPRequestHandler):
-    def _json(self, payload: dict, status: int = HTTPStatus.OK) -> None:
-        body = json.dumps(payload).encode()
+    def _send_json(self, payload: dict, status: int = HTTPStatus.OK) -> None:
+        body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -152,52 +104,30 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        _STATUS["uptime"] = round(time.time() - _start_time, 2)
+        uptime = round(time.time() - _start_time, 2)
         if self.path in ("/", "/health"):
-            self._json({"status": "ok", "uptime": _STATUS["uptime"]})
+            self._send_json({"status": "ok", "uptime": uptime})
         elif self.path == "/status":
-            self._json(_STATUS)
+            self._send_json({
+                "status": "ok",
+                "uptime": uptime,
+                "port": _PORT,
+                "version": "0.1.2",
+            })
         else:
-            self._json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+            self._send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
 
     def log_message(self, fmt, *args) -> None:
         _LOGGER.debug(fmt, *args)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+def run() -> None:
+    # Register with Supervisor FIRST so HA starts the config flow
+    # while the HTTP server is coming up.
+    register_discovery()
 
-def main() -> None:
-    options = {}
-    if OPTIONS_PATH.exists():
-        try:
-            options = json.loads(OPTIONS_PATH.read_text())
-        except json.JSONDecodeError:
-            _LOGGER.warning("Could not parse options.json, using defaults.")
-
-    port = int(options.get("port", 8099))
-
-    # 1. Register discovery so HA fires async_step_hassio
-    register_discovery(port)
-
-    # 2. Probe the MCP server and cache result in _STATUS
-    _LOGGER.info("Probing HA MCP Server at %s …", MCP_ENDPOINT)
-    mcp = probe_mcp_server()
-    _STATUS.update({
-        "status": "ok",
-        "mcp_available": mcp["available"],
-        "mcp_tools": mcp["tools"],
-        "mcp_error": mcp.get("error"),
-    })
-    _LOGGER.info(
-        "MCP Server probe: available=%s tools=%d error=%s",
-        mcp["available"], len(mcp["tools"]), mcp.get("error"),
-    )
-
-    # 3. Serve HTTP
-    server = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
-    _LOGGER.info("Listening on port %d", port)
+    server = ThreadingHTTPServer(("0.0.0.0", _PORT), _Handler)
+    _LOGGER.info("Listening on port %d", _PORT)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -207,4 +137,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run()
