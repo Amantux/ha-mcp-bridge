@@ -1,45 +1,36 @@
-"""GitHub device-flow OAuth and Copilot session-token management.
+"""GitHub device-flow OAuth token management.
 
 Flow
 ----
-1. Client calls start_device_flow() → returns {user_code, verification_uri, device_code, interval}
+1. Client calls start_device_flow()  returns {user_code, verification_uri, device_code, interval}
 2. User visits verification_uri and enters user_code in a browser.
 3. Client polls poll_device_token(device_code) every `interval` seconds until
    it returns a token dict; call save_token() to persist it.
-4. Subsequent calls to get_copilot_token() exchange the GitHub OAuth token for a
-   short-lived Copilot session token (~30 min TTL), cached in memory.
+4. The stored GitHub OAuth token is used directly as a Bearer credential for
+   the GitHub Models API - no secondary token exchange needed.
 
 Why this client ID?
 -------------------
-`Iv1.b507a08c87ecfe98` is the well-known public client ID of the GitHub Copilot
-VS Code extension.  It is used by many open-source Copilot clients and is the
-standard way to obtain a Copilot-scoped token for personal use without
-registering a separate OAuth App.
+`Iv1.b507a08c87ecfe98` is the public client ID of the GitHub Copilot VS Code
+extension, used by many open-source clients for device-flow auth.
 """
 from __future__ import annotations
 
 import json
 import logging
-import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 logger = logging.getLogger("ha_mcp_bridge.auth")
 
-# Public client ID of the GitHub Copilot VS Code extension.
 GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 GITHUB_DEVICE_URL = "https://github.com/login/device/code"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
-COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
 GITHUB_USER_URL = "https://api.github.com/user"
 
 # Persisted under /data (mapped by Supervisor; survives restarts).
 TOKEN_PATH = Path("/data/github_token.json")
-
-# In-memory cache for the short-lived Copilot session token.
-_copilot_cache: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +87,7 @@ def poll_device_token(device_code: str) -> dict | None:
     error = result.get("error", "")
     if error in ("expired_token", "access_denied"):
         raise RuntimeError(f"Device flow ended: {error}")
-    # "authorization_pending" or "slow_down" → caller should retry
+    # "authorization_pending" or "slow_down" -> caller should retry
     return None
 
 
@@ -129,52 +120,10 @@ def is_authenticated() -> bool:
 
 
 def revoke() -> None:
-    """Delete the persisted token and clear the Copilot cache."""
-    global _copilot_cache
-    _copilot_cache = {}
+    """Delete the persisted token."""
     if TOKEN_PATH.exists():
         TOKEN_PATH.unlink()
     logger.info("GitHub token revoked")
-
-
-# ---------------------------------------------------------------------------
-# Copilot session token (short-lived, refreshed automatically)
-# ---------------------------------------------------------------------------
-
-def get_copilot_token() -> str | None:
-    """Exchange the GitHub OAuth token for a short-lived Copilot session token.
-
-    The session token expires in ~30 minutes.  We cache it and refresh with a
-    5-minute buffer so callers never get an expired token.
-    """
-    global _copilot_cache
-    if _copilot_cache:
-        expires_at = _copilot_cache.get("expires_at", 0)
-        if time.time() < expires_at - 300:
-            return _copilot_cache["token"]
-
-    github_token = get_github_token()
-    if not github_token:
-        return None
-
-    try:
-        data = _get_json(COPILOT_TOKEN_URL, github_token)
-        token = data.get("token")
-        expires_at = data.get("expires_at", 0)
-        if token:
-            _copilot_cache = {"token": token, "expires_at": expires_at}
-            logger.debug("Copilot session token refreshed (expires %s)", expires_at)
-            return token
-    except urllib.error.HTTPError as exc:
-        if exc.code == 401:
-            logger.warning("GitHub token rejected by Copilot API — clearing stored token")
-            revoke()
-        else:
-            logger.warning("Copilot token exchange failed: HTTP %d", exc.code)
-    except Exception as exc:
-        logger.warning("Copilot token exchange error: %s", exc)
-
-    return None
 
 
 # ---------------------------------------------------------------------------

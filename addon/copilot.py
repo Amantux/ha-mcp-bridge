@@ -1,17 +1,19 @@
-"""GitHub Copilot chat completions client.
+"""GitHub Models API client (replaces the unofficial Copilot internal endpoint).
 
-Why these headers?
-------------------
-The Copilot API (`api.githubcopilot.com`) validates Editor-Version and
-Editor-Plugin-Version headers.  Using the VS Code extension identifiers is the
-standard approach for third-party clients and matches the client ID used in
-auth.py.
+Why GitHub Models instead of the Copilot internal API?
+-------------------------------------------------------
+The `/copilot_internal/v2/token` exchange endpoint returns HTTP 403 unless the
+account has an active Copilot Individual/Business subscription AND the OAuth
+client ID is on GitHub's allowlist.  Both conditions are brittle for a home
+automation add-on.
 
-Session token lifecycle
------------------------
-`auth.get_copilot_token()` transparently refreshes the ~30-minute session token
-when it is within 5 minutes of expiry, so callers here never need to worry about
-token rotation.
+GitHub Models (`models.inference.ai.azure.com`) is the official, rate-limited
+API for AI models via GitHub.  It accepts the GitHub OAuth token **directly** as
+a Bearer credential — no token-exchange step, no subscription required beyond
+GitHub Models access (free tier available).  The request/response format is
+identical to the OpenAI chat completions API.
+
+Reference: https://docs.github.com/en/github-models/use-github-models/integrating-ai-models-into-your-development-workflow
 """
 from __future__ import annotations
 
@@ -24,11 +26,9 @@ import auth
 
 logger = logging.getLogger("ha_mcp_bridge.copilot")
 
-COPILOT_API_URL = "https://api.githubcopilot.com/chat/completions"
-MODEL = "gpt-4o"
+GITHUB_MODELS_URL = "https://models.inference.ai.azure.com/chat/completions"
+MODEL = "openai/gpt-4o"
 
-# System prompt injected at the start of every conversation.
-# Keeps Copilot focused on Home Assistant assistance.
 HA_SYSTEM_PROMPT = (
     "You are GitHub Copilot, integrated into a Home Assistant smart home system "
     "via the HA MCP Bridge add-on. Help the user understand and control their "
@@ -40,19 +40,22 @@ HA_SYSTEM_PROMPT = (
 
 
 def chat(messages: list[dict]) -> str:
-    """Send a chat completions request and return the assistant reply text.
+    """Call GitHub Models chat completions and return the assistant reply.
+
+    Uses the GitHub OAuth token directly as a Bearer credential.
+    No token exchange needed — simpler and more reliable than the
+    Copilot internal endpoint.
 
     Args:
-        messages: List of {"role": "user"|"assistant", "content": str} dicts
-                  representing the conversation history (newest last).
+        messages: [{role: "user"|"assistant", content: str}, …] newest last.
 
     Raises:
-        RuntimeError: If not authenticated, or if the API returns an error.
+        RuntimeError: Not authenticated, or API error.
     """
-    token = auth.get_copilot_token()
+    token = auth.get_github_token()
     if not token:
         raise RuntimeError(
-            "Not authenticated with GitHub Copilot. "
+            "Not authenticated with GitHub. "
             "Open the HA MCP Bridge panel and sign in first."
         )
 
@@ -63,26 +66,30 @@ def chat(messages: list[dict]) -> str:
         "n": 1,
     }).encode("utf-8")
 
-    req = urllib.request.Request(COPILOT_API_URL, data=payload, method="POST")
+    req = urllib.request.Request(GITHUB_MODELS_URL, data=payload, method="POST")
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
-    # Required by the Copilot API — identifies the integration.
-    req.add_header("Copilot-Integration-Id", "vscode-chat")
-    req.add_header("Editor-Version", "vscode/1.85.0")
-    req.add_header("Editor-Plugin-Version", "copilot-chat/0.12.2")
-    req.add_header("User-Agent", "GitHubCopilotChat/0.12.2")
+    req.add_header("User-Agent", "ha-mcp-bridge/0.1.4")
 
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        logger.error("Copilot API HTTP %d: %s", exc.code, body[:200])
-        raise RuntimeError(f"Copilot API returned HTTP {exc.code}: {body[:200]}") from exc
+        logger.error("GitHub Models API HTTP %d: %s", exc.code, body[:300])
+        if exc.code == 401:
+            raise RuntimeError("GitHub token rejected. Try signing out and back in.") from exc
+        if exc.code == 403:
+            raise RuntimeError(
+                "Access denied. Make sure your GitHub account has GitHub Models access "
+                "(github.com/marketplace/models)."
+            ) from exc
+        raise RuntimeError(f"GitHub Models API returned HTTP {exc.code}: {body[:200]}") from exc
 
     choices = data.get("choices", [])
     if not choices:
-        raise RuntimeError("Copilot API returned an empty choices list")
+        raise RuntimeError("GitHub Models API returned an empty choices list")
 
     return choices[0]["message"]["content"]
+
