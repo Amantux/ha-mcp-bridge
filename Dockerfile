@@ -4,33 +4,18 @@ FROM ${BUILD_FROM}
 WORKDIR /app
 
 # Runtime deps:
-# - github-cli:         gh auth (device-flow / token storage)
-# - curl + bash:        copilot download + scripts
-# - gcompat:            glibc ABI compatibility shim (needed by Node.js-bundled copilot)
-# - libc6-compat:       /lib/libc.musl-* → libgcc_s.so.1 symlinks
-RUN apk add --no-cache github-cli git curl bash gcompat libc6-compat
+# - github-cli:  gh auth (device-flow / token storage for sidebar auth flow)
+# - nodejs + npm: required to install Copilot CLI via npm (official method)
+#   Node.js 22+ is required; use the edge/main repo which tracks latest Node.
+# - gcompat: glibc shim (still useful for any native node modules)
+RUN apk add --no-cache github-cli git curl bash gcompat && \
+    apk add --no-cache nodejs npm --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main/
 
-# Install the standalone GitHub Copilot CLI.
-# Downloads copilot-linux-{x64,arm64}.tar.gz directly from GitHub Releases
-# (no install script — avoids SHA256 checksum step that exits 1 on flaky nets).
-# The tarball contains a single top-level file named `copilot`.
-# armv7 has no release — we gracefully skip; main.py retries at runtime.
-RUN set -e; \
-    ARCH=$(uname -m); \
-    case "$ARCH" in \
-      x86_64|amd64)    DL_ARCH="x64"   ;; \
-      aarch64|arm64)   DL_ARCH="arm64" ;; \
-      *)               echo "Arch $ARCH: no copilot release, skipping"; exit 0 ;; \
-    esac; \
-    URL="https://github.com/github/copilot-cli/releases/latest/download/copilot-linux-${DL_ARCH}.tar.gz"; \
-    echo "==> Downloading $URL"; \
-    curl -fsSL --retry 3 --retry-delay 2 "$URL" -o /tmp/copilot.tar.gz; \
-    echo "==> Downloaded $(wc -c < /tmp/copilot.tar.gz) bytes"; \
-    echo "==> Tarball contents: $(tar -tzf /tmp/copilot.tar.gz)"; \
-    tar -xzf /tmp/copilot.tar.gz -C /usr/local/bin/; \
-    chmod +x /usr/local/bin/copilot; \
-    rm -f /tmp/copilot.tar.gz; \
-    echo "==> copilot version: $(copilot --version 2>&1 | head -1 || echo 'version check failed (may need runtime glibc)')"
+# Install the official GitHub Copilot CLI via npm.
+# This is the recommended install method from the official documentation:
+# https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli
+RUN npm install -g @github/copilot && \
+    echo "copilot version: $(copilot --version 2>&1 | head -1)"
 
 COPY addon/run.sh addon/main.py addon/requirements.txt ./
 COPY addon/static/ ./static/

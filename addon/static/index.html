@@ -128,8 +128,21 @@
                    0 1.6-.01 2.9-.01 3.29 0 .32.21.7.83.58C20.56 21.8 24 17.3 24 12
                    24 5.37 18.63 0 12 0z"/>
         </svg>
-        Continue with GitHub
+        Sign in with GitHub
       </button>
+      <div style="margin-top:18px;padding-top:18px;border-top:1px solid #21262d;text-align:left">
+        <p style="font-size:.8rem;color:#6e7681;margin-bottom:8px">
+          Or, if you already have a
+          <a href="https://github.com/settings/personal-access-tokens/new" target="_blank"
+             rel="noopener" style="color:#58a6ff">fine-grained PAT</a>
+          with <strong style="color:#c9d1d9">Copilot Requests</strong> permission,
+          paste it in the add-on configuration as <code style="color:#79c0ff">copilot_token</code>
+          and it will be used automatically — no sign-in required.
+        </p>
+        <button class="btn btn-secondary" onclick="skipToTerminal()" style="width:100%;justify-content:center">
+          Open terminal (sign in via <code>/login</code>)
+        </button>
+      </div>
     </div>
 
     <!-- step 2: device code + polling -->
@@ -259,15 +272,22 @@
     connectTerminal();
   }
 
+  // Allow skipping the auth overlay and going straight to the terminal
+  // (user can type /login inside the copilot CLI if needed).
+  window.skipToTerminal = function () {
+    hideOverlay();
+    connectTerminal();
+  };
+
   async function checkAuth() {
     try {
-      const r   = await fetch(base + "/auth/status");
+      const r    = await fetch(base + "/auth/status");
       const data = await r.json();
       if (data.authenticated) {
         onAuthenticated(data.username);
       } else {
         showOverlay();
-        setStatus("warning", "Not signed in", "");
+        setStatus("warning", "Not signed in to GitHub", "");
       }
     } catch {
       showOverlay();

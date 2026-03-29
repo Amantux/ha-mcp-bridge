@@ -127,15 +127,37 @@ def _gh_token() -> str | None:
 
 
 def _copilot_env() -> dict:
-    """Env for the copilot PTY — forward gh token when available."""
+    """Env for the copilot PTY.
+
+    Token precedence (per official docs):
+      1. COPILOT_GITHUB_TOKEN  — fine-grained PAT with 'Copilot Requests' perm
+      2. GH_TOKEN / GITHUB_TOKEN — OAuth token (works if scopes include copilot)
+      3. No token — copilot will prompt /login on first launch
+
+    If the add-on option `copilot_token` is set, it is used as
+    COPILOT_GITHUB_TOKEN (highest precedence, skips /login entirely).
+    """
     env = {**os.environ,
            "GH_CONFIG_DIR": GH_CONFIG_DIR,
            "TERM":          "xterm-256color",
-           "COLORTERM":     "truecolor"}
-    token = _gh_token()
-    if token:
-        env["GH_TOKEN"]     = token
-        env["GITHUB_TOKEN"] = token
+           "COLORTERM":     "truecolor",
+           # Store copilot auth data under /data so it persists
+           "COPILOT_DATA_DIR": "/data/copilot",
+           }
+    # Remove any inherited tokens — we set them explicitly below
+    for k in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"):
+        env.pop(k, None)
+
+    # Prefer an explicit PAT from add-on options
+    pat = OPTIONS.get("copilot_token", "").strip()
+    if pat:
+        env["COPILOT_GITHUB_TOKEN"] = pat
+        return env
+
+    # Fall back to the gh-stored OAuth token
+    gh_tok = _gh_token()
+    if gh_tok:
+        env["GH_TOKEN"] = gh_tok
     return env
 
 
@@ -232,115 +254,58 @@ def poll_auth() -> dict:
 # ---------------------------------------------------------------------------
 
 def _check_copilot() -> bool:
-    """Return True only if `copilot` binary is present AND executes cleanly."""
-    path = subprocess.run(["which", "copilot"],
-                          capture_output=True, text=True).stdout.strip()
-    if not path:
-        logger.debug("copilot: not found in PATH")
+    """Return True only if `copilot` is in PATH and runs successfully."""
+    which = subprocess.run(["which", "copilot"],
+                           capture_output=True, text=True).stdout.strip()
+    if not which:
         return False
-    # Binary is present — can it actually run?
     try:
         r = subprocess.run(["copilot", "--version"],
                            capture_output=True, timeout=10)
         if r.returncode == 0:
-            ver = (r.stdout or r.stderr or b"").decode(errors="replace").strip().splitlines()
-            logger.debug("copilot version: %s", ver[0] if ver else "?")
+            ver = (r.stdout or r.stderr or b"").decode(errors="replace").strip()
+            logger.info("copilot version: %s", ver.splitlines()[0] if ver else "?")
             return True
-        logger.warning("copilot --version exited %s (binary may need gcompat)",
-                       r.returncode)
-        return False
-    except FileNotFoundError:
+        logger.warning("copilot --version exited %s: %s",
+                       r.returncode,
+                       (r.stderr or r.stdout or b"").decode(errors="replace").strip())
         return False
     except Exception as exc:
         logger.warning("copilot --version failed: %s", exc)
         return False
 
 
-def _install_copilot_binary(dl_arch: str) -> bool:
-    """Download the copilot tarball and install to /usr/local/bin/copilot.
-
-    Uses `tar` via subprocess (more reliable across Python versions than
-    Python's tarfile module with mutated member names).
-    Returns True on success.
-    """
-    url = (
-        "https://github.com/github/copilot-cli/releases/latest/download/"
-        f"copilot-linux-{dl_arch}.tar.gz"
-    )
-    import tempfile
-    logger.info("Downloading copilot from %s", url)
-    with tempfile.TemporaryDirectory() as tmp:
-        tarball = os.path.join(tmp, "copilot.tar.gz")
-
-        # Download
-        dl = subprocess.run(
-            ["curl", "-fsSL", "--retry", "3", "--retry-delay", "2",
-             "-o", tarball, url],
-            timeout=180,
-        )
-        if dl.returncode != 0:
-            raise RuntimeError(f"curl download failed (exit {dl.returncode})")
-        size = os.path.getsize(tarball)
-        logger.info("Downloaded %d bytes", size)
-        if size < 1_000_000:
-            raise RuntimeError(f"Tarball suspiciously small: {size} bytes")
-
-        # Verify it's a valid gzip before extracting
-        chk = subprocess.run(["tar", "-tzf", tarball], capture_output=True)
-        if chk.returncode != 0:
-            raise RuntimeError("Downloaded file is not a valid gzip tarball")
-        files_in_tar = chk.stdout.decode(errors="replace").strip().splitlines()
-        logger.info("Tarball contents: %s", files_in_tar)
-
-        # Extract directly to /usr/local/bin/
-        # The tarball has a single top-level file named `copilot`.
-        ex = subprocess.run(
-            ["tar", "-xzf", tarball, "-C", "/usr/local/bin/"],
-            capture_output=True,
-        )
-        if ex.returncode != 0:
-            raise RuntimeError(
-                f"tar extract failed: {ex.stderr.decode(errors='replace')}")
-
-    # Ensure executable bit
-    binary = "/usr/local/bin/copilot"
-    if not os.path.isfile(binary):
-        raise RuntimeError(f"Expected {binary} after extraction but not found")
-    os.chmod(binary, 0o755)
-    return True
-
-
 def _ensure_copilot() -> None:
-    """Install the copilot binary if missing or non-functional.
+    """Install the Copilot CLI via npm if not already present.
 
-    Runs at startup as a runtime fallback for build-time install failures
-    (e.g., armv7 arch, offline network, checksum failures).
+    This is the official install method per GitHub docs:
+    https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli
+    npm install -g @github/copilot  (requires Node.js 22+)
     """
     if _check_copilot():
-        logger.info("copilot binary OK")
         return
-    import platform
-    machine  = platform.machine().lower()
-    arch_map = {"x86_64": "x64", "amd64": "x64",
-                "aarch64": "arm64", "arm64": "arm64"}
-    dl_arch  = arch_map.get(machine)
-    if not dl_arch:
-        logger.warning("No copilot release for arch '%s' — PTY will be unavailable",
-                       machine)
-        return
+    logger.info("copilot not found — installing via npm install -g @github/copilot …")
     try:
-        _install_copilot_binary(dl_arch)
+        r = subprocess.run(
+            ["npm", "install", "-g", "@github/copilot"],
+            capture_output=True, text=True, timeout=180,
+        )
+        logger.info("npm stdout: %s", r.stdout[-2000:] if r.stdout else "(none)")
+        if r.returncode != 0:
+            logger.error("npm install failed (exit %s): %s", r.returncode, r.stderr[-1000:])
+            return
         if _check_copilot():
-            logger.info("copilot installed successfully (runtime)")
+            logger.info("copilot installed successfully via npm")
         else:
             logger.error(
-                "copilot binary installed but won't run. "
-                "This usually means the glibc shim (gcompat) is missing. "
-                "Check that the Dockerfile includes: "
-                "apk add gcompat libc6-compat"
+                "npm install succeeded but `copilot` still not runnable. "
+                "Ensure Node.js 22+ is installed (check: node --version)."
             )
+    except FileNotFoundError:
+        logger.error("npm not found — cannot install copilot. "
+                     "Ensure nodejs and npm are in the Docker image.")
     except Exception as exc:
-        logger.error("copilot runtime install failed: %s", exc)
+        logger.error("copilot npm install failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
