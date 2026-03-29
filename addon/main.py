@@ -248,36 +248,26 @@ def _check_copilot() -> bool:
 
 
 def _ensure_copilot() -> None:
-    """Install the Copilot CLI via npm if not already present.
-
-    Official install method per GitHub documentation:
-    https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli
-      npm install -g @github/copilot  (requires Node.js 22+)
-
-    Works on all arches (amd64, aarch64, armv7) — no binary extraction or
-    glibc compatibility issues.
-    """
+    """Safety-net install in case run.sh's npm install was skipped or failed."""
     if _check_copilot():
         return
-    logger.info("copilot not found — installing via: npm install -g @github/copilot")
+    logger.info("copilot not found — attempting npm install -g @github/copilot")
     try:
         r = subprocess.run(
             ["npm", "install", "-g", "@github/copilot"],
             capture_output=True, text=True, timeout=180,
         )
         if r.returncode != 0:
-            logger.error("npm install failed (exit %s):\n%s",
-                         r.returncode, r.stderr[-1000:])
-            return
-        if _check_copilot():
-            logger.info("copilot installed successfully via npm")
+            logger.error("npm install failed (exit %s): %s",
+                         r.returncode, r.stderr[-500:])
+        elif _check_copilot():
+            logger.info("copilot installed successfully")
         else:
-            logger.error("npm install succeeded but copilot still not runnable — "
-                         "ensure Node.js 22+ is installed (node --version)")
+            logger.error("npm install succeeded but copilot still not runnable")
     except FileNotFoundError:
-        logger.error("npm not found in PATH — ensure nodejs/npm are in the image")
+        logger.error("npm not found — nodejs/npm missing from image")
     except Exception as exc:
-        logger.error("copilot install failed: %s", exc)
+        logger.error("copilot install error: %s", exc)
 
 
 # ---------------------------------------------------------------------------

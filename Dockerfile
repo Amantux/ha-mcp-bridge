@@ -3,19 +3,10 @@ FROM ${BUILD_FROM}
 
 WORKDIR /app
 
-# Runtime deps:
-# - github-cli:  gh auth (device-flow sign-in stored in /data/gh)
-# - nodejs + npm: required by the GitHub Copilot CLI (Node.js 22+)
-#   Alpine edge/main carries the latest Node LTS.
-# - gcompat:     glibc shim (safety net for any native node modules)
-RUN apk add --no-cache github-cli git curl gcompat && \
-    apk add --no-cache nodejs npm \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main/
-
-# Install the GitHub Copilot CLI using the official npm method.
-# Reference: https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli
-RUN npm install -g @github/copilot && \
-    copilot --version
+# Only stable Alpine packages — no external downloads at build time.
+# github-cli: gh auth device-flow
+# nodejs + npm: needed at runtime to install the Copilot CLI
+RUN apk add --no-cache github-cli nodejs npm
 
 COPY addon/run.sh addon/main.py addon/requirements.txt ./
 COPY addon/static/ ./static/
