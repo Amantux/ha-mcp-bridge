@@ -3,297 +3,342 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Copilot Terminal</title>
+  <title>GitHub Copilot</title>
+  <!-- xterm.js 5.3 from CDN -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-attach@0.9.0/lib/xterm-addon-attach.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg: #0d1117;
-      --text: #c9d1d9;
-      --dim: #6e7681;
-      --green: #3fb950;
-      --blue: #58a6ff;
-      --yellow: #d29922;
-      --red: #f85149;
-      --prompt: #58a6ff;
-      --cursor: #c9d1d9;
-      --font: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      --bg:      #0d1117;
+      --surface: #161b22;
+      --border:  #30363d;
+      --text:    #e6edf3;
+      --dim:     #6e7681;
+      --blue:    #58a6ff;
+      --green:   #3fb950;
+      --yellow:  #d29922;
+      --red:     #f85149;
     }
-    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; line-height: 1.6; overflow: hidden; }
-    #terminal { display: flex; flex-direction: column; height: 100vh; }
+    html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
 
-    /* ── output ── */
-    #output {
-      flex: 1;
-      overflow-y: auto;
-      padding: 12px 14px 4px;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-    #output::-webkit-scrollbar { width: 6px; }
-    #output::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    /* ── Layout ── */
+    #app { display: flex; flex-direction: column; height: 100vh; }
 
-    .line-out  { color: var(--text); }
-    .line-err  { color: var(--red); }
-    .line-info { color: var(--dim); }
-    .line-ok   { color: var(--green); }
-    .line-prompt { color: var(--prompt); }
-    .line-user { color: var(--yellow); }
-
-    /* ── input row ── */
-    #input-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 14px 10px;
-      border-top: 1px solid #21262d;
+    /* ── Header ── */
+    header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
-    #ps1 { color: var(--prompt); white-space: nowrap; user-select: none; }
-    #input {
-      flex: 1;
-      background: transparent;
-      border: none;
-      outline: none;
-      color: var(--text);
-      font-family: var(--font);
-      font-size: 13px;
-      caret-color: var(--cursor);
+    header svg { flex-shrink: 0; }
+    header h1  { font-size: 14px; font-weight: 600; flex: 1; }
+    #auth-pill {
+      font-size: 12px; padding: 3px 12px; border-radius: 20px;
+      border: 1px solid var(--border); cursor: pointer; background: transparent;
+      color: var(--dim); transition: all 0.15s;
     }
-    #input::placeholder { color: var(--dim); }
+    #auth-pill.ok  { border-color: var(--green); color: var(--green); }
+    #auth-pill.out { border-color: var(--blue);  color: var(--blue);  }
+    #restart-btn {
+      font-size: 12px; padding: 3px 12px; border-radius: 20px;
+      border: 1px solid var(--border); cursor: pointer; background: transparent;
+      color: var(--text); display: none;
+    }
+    #restart-btn:hover { border-color: var(--blue); color: var(--blue); }
 
-    /* ── auth banner ── */
-    #auth-banner {
-      background: #161b22;
-      border-bottom: 1px solid #21262d;
-      padding: 10px 14px;
-      display: none;
-      flex-direction: column;
-      gap: 6px;
+    /* ── Auth gate ── */
+    #auth-gate {
+      display: none; flex-direction: column; align-items: center;
+      justify-content: center; flex: 1; gap: 16px; padding: 24px; text-align: center;
     }
-    #auth-banner.visible { display: flex; }
-    #auth-code { font-size: 22px; letter-spacing: 4px; color: var(--blue); font-weight: 700; }
-    #auth-url  { color: var(--dim); font-size: 11px; }
-    #auth-url a { color: var(--blue); text-decoration: none; }
-    .auth-row  { display: flex; align-items: center; gap: 10px; }
-    .blink { animation: blink 1s step-end infinite; }
-    @keyframes blink { 50% { opacity: 0; } }
+    #auth-gate.visible { display: flex; }
+    #auth-gate h2 { font-size: 18px; }
+    #auth-gate p  { color: var(--dim); max-width: 380px; line-height: 1.6; }
 
-    /* ── spinner ── */
-    .spin {
-      display: inline-block;
-      width: 10px; height: 10px;
-      border: 1px solid var(--dim);
-      border-top-color: var(--blue);
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-      flex-shrink: 0;
+    .code-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: 18px 28px; text-align: center;
     }
+    .code-card .lbl  { font-size: 11px; color: var(--dim); margin-bottom: 6px; }
+    .code-card .code { font-family: monospace; font-size: 30px; font-weight: 700;
+                       letter-spacing: 5px; color: var(--blue); }
+    .code-card .url  { font-size: 12px; color: var(--dim); margin-top: 8px; }
+    .code-card .url a { color: var(--blue); text-decoration: none; }
+
+    .spinner { width: 18px; height: 18px; border: 2px solid var(--border);
+               border-top-color: var(--blue); border-radius: 50%;
+               animation: spin 0.7s linear infinite; display: none; }
+    .spinner.on { display: inline-block; }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    .row { display: flex; align-items: center; gap: 10px; }
+    .btn { padding: 8px 20px; border-radius: 8px; border: none; font-size: 13px;
+           font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: var(--blue); color: #000; }
+    .btn-ghost   { background: transparent; border: 1px solid var(--border); color: var(--text); }
+
+    /* ── Terminal wrapper ── */
+    #term-wrap {
+      flex: 1; overflow: hidden; padding: 6px;
+      display: none;
+    }
+    #term-wrap.visible { display: block; }
+    #terminal { width: 100%; height: 100%; }
+
+    /* ── Ended overlay ── */
+    #ended {
+      display: none; position: absolute; bottom: 48px; left: 50%;
+      transform: translateX(-50%);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 16px;
+      font-size: 12px; color: var(--dim); white-space: nowrap;
+    }
+    #ended.visible { display: block; }
   </style>
 </head>
 <body>
-<div id="terminal">
+<div id="app">
+  <header>
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+        0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13
+        -.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66
+        .07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95
+        0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12
+        0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27
+        1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15
+        0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48
+        0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8
+        c0-4.42-3.58-8-8-8z"/>
+    </svg>
+    <h1>GitHub Copilot</h1>
+    <button id="restart-btn" onclick="startTerminal()">↺ New session</button>
+    <button id="auth-pill" class="out" onclick="onAuthPillClick()">Sign in</button>
+  </header>
 
-  <!-- Auth banner (shown when device flow is pending) -->
-  <div id="auth-banner">
-    <div class="auth-row">
-      <span class="spin" id="auth-spin" style="display:none"></span>
-      <span style="color:var(--yellow)">▸ GitHub auth required</span>
+  <!-- Auth gate -->
+  <div id="auth-gate">
+    <svg width="44" height="44" viewBox="0 0 16 16" fill="#58a6ff">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+        0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13
+        -.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66
+        .07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95
+        0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12
+        0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27
+        1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15
+        0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48
+        0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8
+        c0-4.42-3.58-8-8-8z"/>
+    </svg>
+    <h2>Sign in to GitHub</h2>
+    <p>GitHub Copilot in the CLI needs your GitHub account. You need a Copilot Individual or Business subscription.</p>
+    <button class="btn btn-primary" id="signin-btn" onclick="startAuth()">Sign in with GitHub</button>
+
+    <!-- Device code card (shown after clicking sign in) -->
+    <div id="device-box" style="display:none; flex-direction:column; align-items:center; gap:12px">
+      <div class="code-card">
+        <div class="lbl">Visit this page in your browser and enter the code</div>
+        <div class="code" id="device-code">------</div>
+        <div class="url"><a id="device-link" href="https://github.com/login/device" target="_blank" rel="noopener">github.com/login/device</a></div>
+      </div>
+      <div class="row">
+        <div class="spinner on" id="auth-spin"></div>
+        <span style="color:var(--dim);font-size:13px">Waiting for browser approval…</span>
+      </div>
+      <button class="btn btn-ghost" onclick="cancelAuth()">Cancel</button>
     </div>
-    <div>Open <span id="auth-url"><a id="auth-link" href="https://github.com/login/device" target="_blank" rel="noopener">github.com/login/device</a></span> and enter:</div>
-    <div id="auth-code">------</div>
-    <div style="color:var(--dim);font-size:11px" id="auth-waiting">Waiting for browser approval<span class="blink">_</span></div>
+    <div id="auth-err" style="color:var(--red);font-size:13px;display:none"></div>
   </div>
 
-  <!-- Terminal output -->
-  <div id="output"></div>
-
-  <!-- Input row -->
-  <div id="input-row">
-    <span id="ps1">copilot&gt;</span>
-    <input
-      id="input"
-      type="text"
-      placeholder="ask anything about your Home Assistant…"
-      autocomplete="off"
-      spellcheck="false"
-      autofocus
-    />
+  <!-- Terminal -->
+  <div id="term-wrap">
+    <div id="terminal"></div>
   </div>
+
+  <div id="ended">Session ended — <a href="#" onclick="startTerminal();return false" style="color:var(--blue)">start new session</a></div>
 </div>
 
 <script>
 // ---------------------------------------------------------------------------
-// Base URL — works under both direct access and HA ingress proxy
+// Base URL — works under HA ingress proxy and direct access alike
 // ---------------------------------------------------------------------------
 const BASE = window.location.origin +
              window.location.pathname.replace(/\/[^/]*$/, '');
-const api = (path) => BASE + '/' + path;
+const api  = p => `${BASE}/${p}`;
+const wsUrl = () => {
+  const u = new URL(api('ws'));
+  u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+  return u.toString();
+};
 
 // ---------------------------------------------------------------------------
-// Terminal output helpers
+// xterm.js setup
 // ---------------------------------------------------------------------------
-const out = document.getElementById('output');
+const term    = new Terminal({ cursorBlink: true, fontSize: 13,
+                                fontFamily: '"SFMono-Regular",Consolas,monospace',
+                                theme: { background: '#0d1117', foreground: '#e6edf3',
+                                         cursor: '#e6edf3', selectionBackground: '#264f78' } });
+const fitAddon = new FitAddon.FitAddon();
+term.loadAddon(fitAddon);
 
-function writeLine(text, cls = 'line-out') {
-  const div = document.createElement('div');
-  div.className = cls;
-  div.textContent = text;
-  out.appendChild(div);
-  out.scrollTop = out.scrollHeight;
-}
-
-function writeLines(text, cls) {
-  text.split('\n').forEach(l => { if (l !== '') writeLine(l, cls); });
-}
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-let busy = false;
-let authPolling = null;
+let ws      = null;
+let pollTimer = null;
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
-window.addEventListener('load', async () => {
-  writeLine('HA MCP Bridge — GitHub Copilot terminal', 'line-info');
-  writeLine('Type a prompt and press Enter. Type "auth" to sign in to GitHub.', 'line-info');
-  writeLine('', 'line-info');
-  await checkAuth(true);
-  document.getElementById('input').focus();
-});
+window.addEventListener('load', () => checkAuth(true));
+window.addEventListener('resize', () => { if (ws) { fitAddon.fit(); sendResize(); } });
 
-async function checkAuth(quiet = false) {
-  try {
-    const r = await fetch(api('auth/status'));
-    const d = await r.json();
-    if (d.authenticated) {
-      document.getElementById('ps1').textContent = (d.username ? `@${d.username}` : 'copilot') + '>';
-      if (!quiet) writeLine(`✓ Signed in as @${d.username || '?'}`, 'line-ok');
-      return true;
-    } else {
-      document.getElementById('ps1').textContent = 'copilot>';
-      if (!quiet) writeLine('✗ Not signed in. Type "auth" to authenticate.', 'line-err');
-      return false;
-    }
-  } catch (e) {
-    writeLine('Error checking auth: ' + e.message, 'line-err');
-    return false;
+async function checkAuth(initial = false) {
+  const r = await fetch(api('auth/status')).then(r => r.json()).catch(() => ({}));
+  updatePill(r.authenticated, r.username);
+  if (r.authenticated) {
+    document.getElementById('auth-gate').classList.remove('visible');
+    if (initial) startTerminal();
+  } else {
+    document.getElementById('auth-gate').classList.add('visible');
+    document.getElementById('term-wrap').classList.remove('visible');
   }
 }
 
-// ---------------------------------------------------------------------------
-// Auth flow
-// ---------------------------------------------------------------------------
-async function startAuth() {
-  writeLine('Starting GitHub auth…', 'line-info');
-  setBusy(true);
-  try {
-    const r = await fetch(api('auth/start'), { method: 'POST' });
-    const d = await r.json();
-    if (d.error) { writeLine('Auth error: ' + d.error, 'line-err'); setBusy(false); return; }
-
-    const code = d.code || '------';
-    const url  = d.url  || 'https://github.com/login/device';
-
-    document.getElementById('auth-code').textContent = code;
-    document.getElementById('auth-link').href = url;
-    document.getElementById('auth-link').textContent = url.replace('https://', '');
-    document.getElementById('auth-banner').classList.add('visible');
-    document.getElementById('auth-spin').style.display = 'inline-block';
-
-    writeLine(`→ Visit ${url}`, 'line-info');
-    writeLine(`→ Enter code: ${code}`, 'line-info');
-    window.open(url, '_blank');
-
-    // Poll for completion
-    authPolling = setInterval(async () => {
-      try {
-        const pr = await fetch(api('auth/poll'), { method: 'POST' });
-        const pd = await pr.json();
-        if (pd.done) {
-          clearInterval(authPolling);
-          authPolling = null;
-          document.getElementById('auth-banner').classList.remove('visible');
-          setBusy(false);
-          if (pd.authenticated) {
-            writeLine(`✓ Signed in as @${pd.username || '?'}`, 'line-ok');
-            document.getElementById('ps1').textContent = (pd.username ? `@${pd.username}` : 'copilot') + '>';
-          } else {
-            writeLine('Auth did not complete — try "auth" again.', 'line-err');
-          }
-        }
-      } catch { /* retry */ }
-    }, 2000);
-  } catch (e) {
-    writeLine('Auth failed: ' + e.message, 'line-err');
-    setBusy(false);
-  }
+function updatePill(authed, user) {
+  const p = document.getElementById('auth-pill');
+  if (authed) { p.textContent = user ? `@${user}` : 'Signed in'; p.className = 'ok'; }
+  else        { p.textContent = 'Sign in'; p.className = 'out'; }
 }
 
 // ---------------------------------------------------------------------------
-// Input handling
+// Terminal session
 // ---------------------------------------------------------------------------
-document.getElementById('input').addEventListener('keydown', async (e) => {
-  if (e.key !== 'Enter') return;
-  e.preventDefault();
-  const inp = document.getElementById('input');
-  const text = inp.value.trim();
-  if (!text || busy) return;
-  inp.value = '';
+function startTerminal() {
+  document.getElementById('ended').classList.remove('visible');
+  document.getElementById('restart-btn').style.display = 'none';
 
-  // Echo the input
-  writeLine(`${document.getElementById('ps1').textContent} ${text}`, 'line-user');
+  const wrap = document.getElementById('term-wrap');
+  wrap.classList.add('visible');
 
-  // Built-in commands
-  if (text === 'auth' || text === 'login') { await startAuth(); return; }
-  if (text === 'status') { await checkAuth(false); return; }
-  if (text === 'clear') { out.innerHTML = ''; return; }
-  if (text === 'help') {
-    writeLine('Commands:', 'line-info');
-    writeLine('  auth    — sign in to GitHub', 'line-info');
-    writeLine('  status  — check auth status', 'line-info');
-    writeLine('  clear   — clear terminal', 'line-info');
-    writeLine('  <anything else> — ask GitHub Copilot', 'line-info');
-    return;
+  // Mount xterm if not yet done
+  if (!term.element) {
+    term.open(document.getElementById('terminal'));
   }
+  fitAddon.fit();
 
-  // Send to Copilot
-  setBusy(true);
-  const spinner = writeLine('…', 'line-info');
-  try {
-    const r = await fetch(api('chat'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: text }),
+  // Close existing WS
+  if (ws) { try { ws.close(); } catch(_) {} }
+
+  ws = new WebSocket(wsUrl());
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    sendResize();
+    // Wire xterm -> ws
+    term.onData(data => {
+      if (ws && ws.readyState === WebSocket.OPEN)
+        ws.send(data);
     });
-    const d = await r.json();
-    spinner.remove();
-    if (d.error) {
-      writeLines(d.error, 'line-err');
-    } else {
-      writeLines(d.output || '(no output)', 'line-out');
-    }
-  } catch (err) {
-    spinner.remove();
-    writeLine('Network error: ' + err.message, 'line-err');
-  }
-  setBusy(false);
-  writeLine('', 'line-info');
-  document.getElementById('input').focus();
-});
+  };
 
-function setBusy(b) {
-  busy = b;
-  document.getElementById('input').disabled = b;
-  if (!b) document.getElementById('input').focus();
+  ws.onmessage = e => {
+    const data = e.data instanceof ArrayBuffer
+      ? new Uint8Array(e.data)
+      : e.data;
+    term.write(data);
+  };
+
+  ws.onclose = () => {
+    term.writeln('\r\n\x1b[2m[session ended]\x1b[0m');
+    document.getElementById('ended').classList.add('visible');
+    document.getElementById('restart-btn').style.display = '';
+    ws = null;
+  };
+
+  term.focus();
 }
 
-// Re-focus input when clicking anywhere in the terminal
-document.getElementById('output').addEventListener('click', () => {
-  if (!busy) document.getElementById('input').focus();
-});
+function sendResize() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const rows = term.rows, cols = term.cols;
+  // Protocol: 0x01 + big-endian uint16 rows + uint16 cols
+  const buf = new Uint8Array(5);
+  buf[0] = 0x01;
+  new DataView(buf.buffer).setUint16(1, rows,  false);
+  new DataView(buf.buffer).setUint16(3, cols, false);
+  ws.send(buf);
+}
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+function onAuthPillClick() {
+  const p = document.getElementById('auth-pill');
+  if (p.classList.contains('ok')) {
+    if (confirm('Sign out from GitHub?')) signOut();
+  } else {
+    document.getElementById('auth-gate').classList.toggle('visible');
+  }
+}
+
+async function signOut() {
+  await fetch(api('auth/start'), { method: 'POST' }); // no-op; gh handles state
+  // Just clear the pill — user must re-auth
+  updatePill(false, '');
+  document.getElementById('auth-gate').classList.add('visible');
+  document.getElementById('term-wrap').classList.remove('visible');
+}
+
+async function startAuth() {
+  document.getElementById('auth-err').style.display = 'none';
+  document.getElementById('signin-btn').disabled = true;
+  try {
+    const d = await fetch(api('auth/start'), { method: 'POST' }).then(r => r.json());
+    if (d.error) throw new Error(d.error);
+
+    document.getElementById('device-code').textContent = d.code || '------';
+    document.getElementById('device-link').href        = d.url  || 'https://github.com/login/device';
+    document.getElementById('device-link').textContent = (d.url || 'https://github.com/login/device').replace('https://','');
+    document.getElementById('device-box').style.display = 'flex';
+
+    if (d.url) window.open(d.url, '_blank');
+
+    pollTimer = setInterval(async () => {
+      const p = await fetch(api('auth/poll'), { method: 'POST' }).then(r => r.json()).catch(() => ({}));
+      if (p.done) {
+        clearInterval(pollTimer);
+        document.getElementById('device-box').style.display = 'none';
+        document.getElementById('signin-btn').disabled = false;
+        if (p.authenticated) {
+          updatePill(true, p.username);
+          document.getElementById('auth-gate').classList.remove('visible');
+          startTerminal();
+        } else {
+          showAuthErr('Authentication did not complete — try again.');
+        }
+      }
+    }, 2000);
+  } catch(e) {
+    document.getElementById('signin-btn').disabled = false;
+    showAuthErr(e.message);
+  }
+}
+
+function cancelAuth() {
+  clearInterval(pollTimer);
+  document.getElementById('device-box').style.display = 'none';
+  document.getElementById('signin-btn').disabled = false;
+}
+
+function showAuthErr(msg) {
+  const el = document.getElementById('auth-err');
+  el.textContent = msg; el.style.display = 'block';
+}
 </script>
 </body>
 </html>
