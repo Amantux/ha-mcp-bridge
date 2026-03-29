@@ -1,10 +1,14 @@
 {
   "name": "HA MCP Bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "slug": "ha-mcp-bridge",
   "description": "Connects to Home Assistant's built-in MCP Server and bridges its tools back as discoverable integration data.",
   "url": "https://github.com/Amantux/ha-mcp-bridge",
-  "arch": ["amd64", "armv7", "aarch64"],
+  "arch": [
+    "amd64",
+    "armv7",
+    "aarch64"
+  ],
   "startup": "services",
   "boot": "auto",
   "options": {
@@ -16,6 +20,10 @@
   "ports": {
     "8099/tcp": 8099
   },
-  "map": ["data:rw"],
-  "discovery": ["ha_mcp_bridge"]
+  "map": [
+    "data:rw"
+  ],
+  "discovery": [
+    "ha_mcp_bridge"
+  ]
 }

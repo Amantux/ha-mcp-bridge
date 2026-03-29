@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.1] - 2026-03-29
+- **Fix (critical): s6-overlay Dockerfile.**
+  HA base images use s6-overlay as PID 1 (`ENTRYPOINT ["/init"]`). The previous
+  `Dockerfile` had `CMD ["/app/run.sh"]` which overrides the base image entrypoint,
+  bypassing s6-overlay entirely → `s6-overlay-suexec: fatal: can only run as pid 1`.
+  Fix: removed `CMD`; service script is now registered at
+  `/etc/services.d/ha-mcp-bridge/run` so s6-overlay starts and supervises it.
+- **Fix: `run.sh` shebang changed to `#!/usr/bin/with-contenv bashio`.**
+  `with-contenv` reads from s6-overlay's container environment store and exports
+  variables (including `SUPERVISOR_TOKEN`) before exec-ing the process. Without it
+  `SUPERVISOR_TOKEN` is empty and both discovery registration and MCP probing silently
+  fail with "no_supervisor_token".
+
 ## [0.1.0] - 2026-03-29
 - Initial release.
 - Supervisor add-on (`addon/main.py`):
