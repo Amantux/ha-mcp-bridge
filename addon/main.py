@@ -632,19 +632,154 @@ async def handle_auth_poll(request: aiohttp.web.Request) -> aiohttp.web.Response
 
 
 # ---------------------------------------------------------------------------
+# /chat/stream  — SSE streaming endpoint for the web UI
+# ---------------------------------------------------------------------------
+
+_http_session: aiohttp.ClientSession | None = None
+
+
+async def _get_http_session() -> aiohttp.ClientSession:
+    global _http_session
+    if _http_session is None or _http_session.closed:
+        _http_session = aiohttp.ClientSession()
+    return _http_session
+
+
+async def handle_chat_stream(request: aiohttp.web.Request) -> aiohttp.web.StreamResponse:
+    """Stream Copilot Chat API response as Server-Sent Events."""
+    try:
+        body = await request.json()
+    except Exception:
+        return aiohttp.web.Response(text="invalid JSON", status=400)
+
+    prompt  = str(body.get("prompt", "")).strip()
+    conv_id = str(body.get("conversation_id", "")).strip() or None
+    if not prompt:
+        return aiohttp.web.Response(text="prompt required", status=400)
+
+    history = list(_conversation_histories.get(conv_id, [])) if conv_id else []
+
+    # Prepare SSE response before any slow work so the connection is held.
+    resp = aiohttp.web.StreamResponse(headers={
+        "Content-Type":       "text/event-stream",
+        "Cache-Control":      "no-cache",
+        "X-Accel-Buffering":  "no",
+    })
+    await resp.prepare(request)
+
+    async def sse(data: dict | str) -> None:
+        payload = data if isinstance(data, str) else json.dumps(data)
+        await resp.write(f"data: {payload}\n\n".encode())
+
+    # Get auth token (sync — runs in thread executor).
+    loop = asyncio.get_running_loop()
+    try:
+        token, scheme = await loop.run_in_executor(None, _get_copilot_api_token)
+    except RuntimeError as exc:
+        await sse({"error": str(exc)})
+        await sse("[DONE]")
+        return resp
+
+    messages: list[dict] = [
+        {
+            "role": "system",
+            "content": (
+                "You are GitHub Copilot, an AI assistant embedded in Home Assistant. "
+                "Help the user with home automation, YAML configuration, scripts, "
+                "automations, integrations, shell commands, and code questions. "
+                "Format code examples with appropriate fenced code blocks. "
+                "Be concise and practical."
+            ),
+        }
+    ]
+    messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
+
+    session  = await _get_http_session()
+    full_buf: list[str] = []
+
+    try:
+        async with session.post(
+            "https://api.githubcopilot.com/chat/completions",
+            json={"model": "gpt-4o", "messages": messages, "stream": True, "n": 1},
+            headers={
+                "Authorization":          f"{scheme} {token}",
+                "Content-Type":           "application/json",
+                "Accept":                 "text/event-stream",
+                "User-Agent":             "ha-mcp-bridge/1.0",
+                "Editor-Version":         "ha-mcp-bridge/1.0",
+                "Copilot-Integration-Id": "ha-mcp-bridge",
+                "openai-intent":          "conversation-panel",
+            },
+            timeout=aiohttp.ClientTimeout(total=90, connect=15),
+        ) as upstream:
+            if upstream.status != 200:
+                err_text = await upstream.text()
+                if upstream.status in (401, 403):
+                    global _copilot_api_token_cache
+                    _copilot_api_token_cache = {}
+                await sse({"error": f"Copilot API error {upstream.status}: {err_text[:300]}"})
+                await sse("[DONE]")
+                return resp
+
+            buf = ""
+            async for raw in upstream.content.iter_chunked(512):
+                buf += raw.decode("utf-8", errors="replace")
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    line = line.rstrip("\r")
+                    if not line or line == ":":
+                        continue
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        # Persist history.
+                        if conv_id and full_buf:
+                            full_text = "".join(full_buf)
+                            updated   = list(history) + [
+                                {"role": "user",      "content": prompt},
+                                {"role": "assistant", "content": full_text},
+                            ]
+                            _conversation_histories[conv_id] = (
+                                updated[-(_MAX_HISTORY_TURNS * 2):]
+                            )
+                        await sse("[DONE]")
+                        return resp
+                    try:
+                        chunk  = json.loads(data_str)
+                        delta  = chunk["choices"][0]["delta"].get("content") or ""
+                        if delta:
+                            full_buf.append(delta)
+                        await sse(data_str)   # forward raw chunk verbatim
+                    except (KeyError, json.JSONDecodeError):
+                        pass
+
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.exception("Streaming chat error")
+        await sse({"error": str(exc)})
+
+    await sse("[DONE]")
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # App + entry point
 # ---------------------------------------------------------------------------
 
 def make_app() -> aiohttp.web.Application:
     app = aiohttp.web.Application()
-    app.router.add_get("/",            handle_index)
-    app.router.add_get("/index.html",  handle_index)
-    app.router.add_get("/health",      handle_health)
-    app.router.add_get("/auth/status", handle_auth_status)
-    app.router.add_get("/ws",          ws_terminal)
-    app.router.add_post("/chat",       handle_chat)
-    app.router.add_post("/auth/start", handle_auth_start)
-    app.router.add_post("/auth/poll",  handle_auth_poll)
+    app.router.add_get("/",              handle_index)
+    app.router.add_get("/index.html",    handle_index)
+    app.router.add_get("/health",        handle_health)
+    app.router.add_get("/auth/status",   handle_auth_status)
+    app.router.add_get("/ws",            ws_terminal)
+    app.router.add_post("/chat",         handle_chat)
+    app.router.add_post("/chat/stream",  handle_chat_stream)
+    app.router.add_post("/auth/start",   handle_auth_start)
+    app.router.add_post("/auth/poll",    handle_auth_poll)
     return app
 
 

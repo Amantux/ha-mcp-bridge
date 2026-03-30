@@ -2,6 +2,687 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GitHub Copilot</title>
+  <link rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github-dark.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%; width: 100%;
+      background: #0d1117; color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px; line-height: 1.6;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────── */
+    #app { display: flex; flex-direction: column; height: 100vh; }
+
+    /* ── Header ──────────────────────────────────────────────────── */
+    header {
+      flex-shrink: 0;
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 16px; height: 48px;
+      background: #161b22; border-bottom: 1px solid #30363d;
+      user-select: none;
+    }
+    .header-logo {
+      display: flex; align-items: center; gap: 8px;
+      font-weight: 600; font-size: 15px; color: #e6edf3;
+    }
+    .model-badge {
+      font-size: 11px; padding: 2px 8px;
+      background: #21262d; border: 1px solid #30363d;
+      border-radius: 20px; color: #8b949e;
+    }
+    .hdr-spacer { flex: 1; }
+    .auth-pill {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: #8b949e;
+    }
+    .auth-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #da3633; transition: background .3s;
+    }
+    .auth-dot.ok { background: #3fb950; }
+    .btn-new-chat {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 12px; background: transparent;
+      border: 1px solid #30363d; border-radius: 6px;
+      color: #c9d1d9; font-size: 12px; cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    .btn-new-chat:hover { background: #21262d; border-color: #8b949e; }
+
+    /* ── Auth overlay ─────────────────────────────────────────────── */
+    #auth-overlay {
+      position: fixed; inset: 0; background: #0d1117;
+      z-index: 100; display: flex; align-items: center; justify-content: center;
+    }
+    #auth-overlay.hidden { display: none; }
+    .auth-card {
+      background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+      padding: 40px 36px; max-width: 420px; width: 92%; text-align: center;
+    }
+    .auth-card h2 { font-size: 1.2rem; margin: 16px 0 8px; color: #f0f6fc; }
+    .auth-card p  { font-size: .875rem; color: #8b949e; line-height: 1.6; margin-bottom: 20px; }
+    .btn-gh {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer;
+      background: #238636; color: #fff;
+      font-size: .875rem; font-weight: 600; transition: opacity .15s;
+    }
+    .btn-gh:hover { opacity: .85; }
+    .btn-open {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 10px 20px; border-radius: 8px;
+      background: #21262d; color: #c9d1d9;
+      border: 1px solid #30363d; cursor: pointer;
+      font-size: .875rem; font-weight: 600; margin-top: 10px;
+      text-decoration: none; transition: background .15s;
+    }
+    .btn-open:hover { background: #30363d; }
+    #device-step { display: none; }
+    #device-step.visible { display: block; }
+    .code-box {
+      background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+      padding: 14px; margin: 16px 0;
+      font: 700 1.6rem/1 'SF Mono', Consolas, monospace;
+      color: #58a6ff; letter-spacing: .12em; cursor: pointer; user-select: all;
+    }
+    .copy-hint { font-size: .75rem; color: #6e7681; margin-top: -8px; margin-bottom: 14px; }
+    .spinner {
+      display: inline-block; width: 14px; height: 14px;
+      border: 2px solid #30363d; border-top-color: #58a6ff;
+      border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .poll-msg { font-size: .8rem; color: #8b949e; margin-top: 14px; min-height: 18px; }
+    .poll-msg.ok  { color: #3fb950; }
+    .poll-msg.err { color: #f85149; }
+
+    /* ── Chat scroll ──────────────────────────────────────────────── */
+    #chat-scroll {
+      flex: 1; overflow-y: auto; scroll-behavior: smooth;
+    }
+    #chat-scroll::-webkit-scrollbar { width: 6px; }
+    #chat-scroll::-webkit-scrollbar-track { background: transparent; }
+    #chat-scroll::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    #messages { max-width: 760px; margin: 0 auto; padding: 24px 16px 8px; }
+
+    /* ── Welcome ──────────────────────────────────────────────────── */
+    #welcome {
+      display: flex; flex-direction: column;
+      align-items: center; padding: 56px 20px 24px; text-align: center;
+    }
+    #welcome.hidden { display: none; }
+    .hero-ring {
+      width: 60px; height: 60px; border-radius: 50%;
+      background: #161b22; border: 1px solid #30363d;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 20px;
+    }
+    #welcome h2 { font-size: 1.4rem; font-weight: 600; color: #f0f6fc; margin-bottom: 6px; }
+    #welcome .sub { font-size: .875rem; color: #8b949e; margin-bottom: 32px; }
+    .suggestions {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 10px; width: 100%; max-width: 700px;
+    }
+    .sug {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 14px 16px; text-align: left; cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    .sug:hover { background: #21262d; border-color: #58a6ff; }
+    .sug-title { font-size: .8rem; font-weight: 600; color: #c9d1d9; margin-bottom: 4px; }
+    .sug-text  { font-size: .775rem; color: #8b949e; line-height: 1.4; }
+
+    /* ── Messages ─────────────────────────────────────────────────── */
+    .msg { display: flex; gap: 12px; margin-bottom: 24px; animation: fadein .2s ease; }
+    @keyframes fadein { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; } }
+    .msg.user { flex-direction: row-reverse; }
+    .msg.user .bubble {
+      background: #1f3a5f; border: 1px solid #1f6feb;
+      border-radius: 12px 2px 12px 12px; max-width: 75%;
+    }
+    .msg.assistant .bubble {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 2px 12px 12px 12px; max-width: 90%; width: 100%;
+    }
+    .bubble { padding: 12px 16px; font-size: 14px; line-height: 1.65; word-break: break-word; }
+    .avatar {
+      width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; margin-top: 2px;
+    }
+    .msg.user      .avatar { background: #1f6feb; color: #fff; }
+    .msg.assistant .avatar { background: #161b22; border: 1px solid #30363d; }
+
+    /* ── Markdown in bubbles ──────────────────────────────────────── */
+    .bubble p { margin: 0 0 .7em; }
+    .bubble p:last-child { margin-bottom: 0; }
+    .bubble h1, .bubble h2, .bubble h3 {
+      font-size: 1em; font-weight: 600; color: #f0f6fc; margin: .7em 0 .3em;
+    }
+    .bubble ul, .bubble ol { padding-left: 1.4em; margin: .4em 0 .7em; }
+    .bubble li { margin: .2em 0; }
+    .bubble a { color: #58a6ff; text-decoration: none; }
+    .bubble a:hover { text-decoration: underline; }
+    .bubble strong { color: #f0f6fc; font-weight: 600; }
+    .bubble em { color: #c9d1d9; }
+    .bubble code:not(pre code) {
+      background: #21262d; border: 1px solid #30363d; border-radius: 4px;
+      padding: .1em .35em;
+      font: .85em/1.5 'SF Mono', Consolas, monospace; color: #e6edf3;
+    }
+    .bubble pre {
+      position: relative; margin: .6em 0; border-radius: 8px;
+      overflow: hidden; border: 1px solid #30363d;
+    }
+    .bubble pre code {
+      font: .82em/1.55 'SF Mono', Consolas, monospace;
+      padding: 14px 16px; display: block; overflow-x: auto;
+      background: #161b22 !important;
+    }
+    .copy-code-btn {
+      position: absolute; top: 6px; right: 6px;
+      padding: 3px 9px; background: #21262d; border: 1px solid #30363d;
+      border-radius: 5px; color: #8b949e; font-size: 11px; cursor: pointer;
+      opacity: 0; transition: opacity .15s, color .15s, border-color .15s;
+    }
+    .bubble pre:hover .copy-code-btn { opacity: 1; }
+    .copy-code-btn.ok { color: #3fb950; border-color: #3fb950; }
+    .bubble blockquote {
+      border-left: 3px solid #30363d; padding-left: 12px;
+      color: #8b949e; margin: .5em 0;
+    }
+    .bubble table { border-collapse: collapse; width: 100%; margin: .5em 0; font-size: .85em; }
+    .bubble th, .bubble td { border: 1px solid #30363d; padding: 6px 12px; }
+    .bubble th { background: #21262d; color: #f0f6fc; }
+
+    /* ── Thinking dots ────────────────────────────────────────────── */
+    .thinking span {
+      display: inline-block; width: 6px; height: 6px;
+      background: #58a6ff; border-radius: 50%; margin: 0 2px;
+      animation: dot 1.4s infinite ease-in-out both;
+    }
+    .thinking span:nth-child(2) { animation-delay: .2s; }
+    .thinking span:nth-child(3) { animation-delay: .4s; }
+    @keyframes dot {
+      0%, 80%, 100% { transform: scale(0); opacity: .4; }
+      40%           { transform: scale(1); opacity: 1;  }
+    }
+
+    /* ── Input bar ────────────────────────────────────────────────── */
+    #input-bar {
+      flex-shrink: 0; border-top: 1px solid #30363d;
+      background: #0d1117; padding: 12px 16px 16px;
+    }
+    #input-inner {
+      max-width: 760px; margin: 0 auto;
+      display: flex; align-items: flex-end; gap: 10px;
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 10px; padding: 8px 10px 8px 16px;
+      transition: border-color .15s;
+    }
+    #input-inner:focus-within { border-color: #58a6ff; }
+    #prompt {
+      flex: 1; background: transparent; border: none; outline: none;
+      color: #e6edf3; resize: none; min-height: 24px; max-height: 180px;
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow-y: auto;
+    }
+    #prompt::placeholder { color: #6e7681; }
+    #send-btn {
+      display: flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; background: #238636;
+      border: none; border-radius: 6px; color: #fff;
+      cursor: pointer; flex-shrink: 0; transition: background .15s, opacity .15s;
+    }
+    #send-btn:hover:not(:disabled) { background: #2ea043; }
+    #send-btn:disabled { background: #21262d; opacity: .45; cursor: not-allowed; }
+    .input-hint {
+      max-width: 760px; margin: 6px auto 0;
+      font-size: 11px; color: #6e7681; text-align: center;
+    }
+    kbd {
+      background: #21262d; border: 1px solid #30363d;
+      border-radius: 4px; padding: 1px 5px; font-size: 10px; font-family: inherit;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Auth overlay ─────────────────────────────────────────────── -->
+  <div id="auth-overlay">
+    <div class="auth-card">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor"
+           style="color:#8b949e" aria-hidden="true">
+        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58
+                 0-.28-.01-1.02-.01-2C6 21.37 5.28 19.26 5.28 19.26c-.55-1.38-1.34-1.75-1.34-1.75
+                 -1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1
+                 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22
+                 -.13-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23A11.5 11.5 0 0 1 12 6.8c1.02 0
+                 2.04.14 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.65.25 2.87.12 3.17
+                 .77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.49 5.92.43.37.81 1.1.81 2.22
+                 0 1.6-.01 2.9-.01 3.29 0 .32.21.7.83.58C20.56 21.8 24 17.3 24 12
+                 24 5.37 18.63 0 12 0z"/>
+      </svg>
+      <h2>Sign in to GitHub</h2>
+      <p>Connect your GitHub account to use Copilot in Home Assistant.<br/>
+         Your credentials are stored locally on your HA instance.</p>
+      <div id="signin-step">
+        <button class="btn-gh" onclick="startAuth()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58
+                     0-.28-.01-1.02-.01-2C6 21.37 5.28 19.26 5.28 19.26c-.55-1.38-1.34-1.75-1.34-1.75
+                     -1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1
+                     .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22
+                     -.13-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23A11.5 11.5 0 0 1 12 6.8c1.02 0
+                     2.04.14 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.65.25 2.87.12 3.17
+                     .77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.49 5.92.43.37.81 1.1.81 2.22
+                     0 1.6-.01 2.9-.01 3.29 0 .32.21.7.83.58C20.56 21.8 24 17.3 24 12
+                     24 5.37 18.63 0 12 0z"/>
+          </svg>
+          Continue with GitHub
+        </button>
+      </div>
+      <div id="device-step">
+        <p style="margin-bottom:8px">Open <strong>github.com/login/device</strong> and enter:</p>
+        <div class="code-box" id="device-code"
+             onclick="copyAuthCode(this)" title="Click to copy">&middot;&middot;&middot;&middot;-&middot;&middot;&middot;&middot;</div>
+        <p class="copy-hint">Click to copy &middot; expires in 15&nbsp;min</p>
+        <a id="device-url" href="https://github.com/login/device"
+           target="_blank" rel="noopener" class="btn-open">Open GitHub &nearr;</a>
+        <div class="poll-msg" id="poll-status">
+          <span class="spinner"></span>&nbsp;Waiting for authorization&hellip;
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Header ───────────────────────────────────────────────────── -->
+  <header>
+    <div class="header-logo">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58
+                 0-.28-.01-1.02-.01-2C6 21.37 5.28 19.26 5.28 19.26c-.55-1.38-1.34-1.75-1.34-1.75
+                 -1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1
+                 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22
+                 -.13-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23A11.5 11.5 0 0 1 12 6.8c1.02 0
+                 2.04.14 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.65.25 2.87.12 3.17
+                 .77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.49 5.92.43.37.81 1.1.81 2.22
+                 0 1.6-.01 2.9-.01 3.29 0 .32.21.7.83.58C20.56 21.8 24 17.3 24 12
+                 24 5.37 18.63 0 12 0z"/>
+      </svg>
+      GitHub Copilot
+    </div>
+    <span class="model-badge">GPT-4o</span>
+    <span class="hdr-spacer"></span>
+    <span class="auth-pill">
+      <span id="auth-dot" class="auth-dot"></span>
+      <span id="auth-user"></span>
+    </span>
+    <button class="btn-new-chat" onclick="newChat()" title="New chat">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+        <line x1="12" y1="5" x2="12" y2="19"/>
+        <line x1="5"  y1="12" x2="19" y2="12"/>
+      </svg>
+      New chat
+    </button>
+  </header>
+
+  <!-- ── Chat area ─────────────────────────────────────────────────── -->
+  <div id="chat-scroll">
+    <div id="welcome">
+      <div class="hero-ring">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor"
+             style="color:#58a6ff" aria-hidden="true">
+          <path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58
+                   0-.28-.01-1.02-.01-2C6 21.37 5.28 19.26 5.28 19.26c-.55-1.38-1.34-1.75-1.34-1.75
+                   -1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1
+                   .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22
+                   -.13-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23A11.5 11.5 0 0 1 12 6.8c1.02 0
+                   2.04.14 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.65.25 2.87.12 3.17
+                   .77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.49 5.92.43.37.81 1.1.81 2.22
+                   0 1.6-.01 2.9-.01 3.29 0 .32.21.7.83.58C20.56 21.8 24 17.3 24 12
+                   24 5.37 18.63 0 12 0z"/>
+        </svg>
+      </div>
+      <h2>How can I help you today?</h2>
+      <p class="sub">Ask anything about Home Assistant, code, or automation</p>
+      <div class="suggestions">
+        <div class="sug" onclick="useSuggestion(this)">
+          <div class="sug-title">&#x2728; Create an automation</div>
+          <div class="sug-text">How do I turn on lights at sunset automatically?</div>
+        </div>
+        <div class="sug" onclick="useSuggestion(this)">
+          <div class="sug-title">&#x1F50D; Debug an issue</div>
+          <div class="sug-text">Why isn&apos;t my automation triggering correctly?</div>
+        </div>
+        <div class="sug" onclick="useSuggestion(this)">
+          <div class="sug-title">&#x270F;&#xFE0F; Write a script</div>
+          <div class="sug-text">Write a HA script to send a weather notification</div>
+        </div>
+        <div class="sug" onclick="useSuggestion(this)">
+          <div class="sug-title">&#x1F4DA; Explain YAML</div>
+          <div class="sug-text">Explain how Home Assistant YAML configuration works</div>
+        </div>
+      </div>
+    </div>
+    <div id="messages"></div>
+  </div>
+
+  <!-- ── Input bar ─────────────────────────────────────────────────── -->
+  <div id="input-bar">
+    <div id="input-inner">
+      <textarea id="prompt" rows="1"
+        placeholder="Ask Copilot anything&hellip;"
+        aria-label="Message Copilot"></textarea>
+      <button id="send-btn" onclick="send()" title="Send (Enter)" aria-label="Send">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="12" y1="19" x2="12" y2="5"/>
+          <polyline points="5 12 12 5 19 12"/>
+        </svg>
+      </button>
+    </div>
+    <p class="input-hint">
+      <kbd>Enter</kbd>&nbsp;to send &nbsp;&middot;&nbsp; <kbd>Shift+Enter</kbd>&nbsp;for new line
+    </p>
+  </div>
+</div>
+
+<script>
+"use strict";
+(function () {
+
+// ── Ingress-safe URL base ─────────────────────────────────────────────────
+const pathBase = location.pathname.replace(/\/+$/, "");
+const httpBase = location.origin + pathBase;
+
+// ── State ─────────────────────────────────────────────────────────────────
+let convId      = null;
+let isStreaming = false;
+
+// ── marked + highlight.js ─────────────────────────────────────────────────
+marked.use({ breaks: true, gfm: true });
+
+function renderMd(text) {
+  try {
+    const div = document.createElement("div");
+    div.innerHTML = marked.parse(text);
+    div.querySelectorAll("pre code").forEach(block => {
+      hljs.highlightElement(block);
+    });
+    div.querySelectorAll("pre").forEach(pre => {
+      if (!pre.querySelector(".copy-code-btn")) {
+        const btn = document.createElement("button");
+        btn.className = "copy-code-btn";
+        btn.textContent = "Copy";
+        btn.onclick = () => {
+          const code = pre.querySelector("code")?.innerText || "";
+          navigator.clipboard.writeText(code).then(() => {
+            btn.textContent = "Copied!";
+            btn.classList.add("ok");
+            setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("ok"); }, 2000);
+          });
+        };
+        pre.insertBefore(btn, pre.firstChild);
+      }
+    });
+    return div.innerHTML;
+  } catch {
+    return escHtml(text);
+  }
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;")
+          .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+// ── DOM refs ──────────────────────────────────────────────────────────────
+const overlay    = document.getElementById("auth-overlay");
+const signinStep = document.getElementById("signin-step");
+const deviceStep = document.getElementById("device-step");
+const deviceCode = document.getElementById("device-code");
+const deviceUrl  = document.getElementById("device-url");
+const pollStatus = document.getElementById("poll-status");
+const authDot    = document.getElementById("auth-dot");
+const authUser   = document.getElementById("auth-user");
+const welcome    = document.getElementById("welcome");
+const msgList    = document.getElementById("messages");
+const chatScroll = document.getElementById("chat-scroll");
+const promptEl   = document.getElementById("prompt");
+const sendBtn    = document.getElementById("send-btn");
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+let pollTimer = null;
+
+async function checkAuth() {
+  try {
+    const r = await fetch(httpBase + "/auth/status");
+    const d = await r.json();
+    if (d.authenticated) {
+      authDot.classList.add("ok");
+      authUser.textContent = d.username ? "@" + d.username : "";
+      overlay.classList.add("hidden");
+      promptEl.focus();
+    } else {
+      overlay.classList.remove("hidden");
+    }
+  } catch {
+    setTimeout(checkAuth, 5000);
+  }
+}
+
+window.startAuth = async function () {
+  signinStep.style.display = "none";
+  deviceStep.classList.add("visible");
+  pollStatus.innerHTML = '<span class="spinner"></span>&nbsp;Starting&hellip;';
+  try {
+    const r = await fetch(httpBase + "/auth/start", { method: "POST" });
+    const d = await r.json();
+    deviceCode.textContent = d.code || "----";
+    deviceUrl.href = d.url || "https://github.com/login/device";
+    pollStatus.innerHTML = '<span class="spinner"></span>&nbsp;Waiting for authorization&hellip;';
+    clearInterval(pollTimer);
+    pollTimer = setInterval(pollAuth, 2500);
+  } catch (err) {
+    pollStatus.className = "poll-msg err";
+    pollStatus.textContent = "Failed: " + err.message;
+    signinStep.style.display = "";
+    deviceStep.classList.remove("visible");
+  }
+};
+
+async function pollAuth() {
+  try {
+    const r = await fetch(httpBase + "/auth/poll", { method: "POST" });
+    const d = await r.json();
+    if (d.done && d.authenticated) {
+      clearInterval(pollTimer);
+      pollStatus.className = "poll-msg ok";
+      pollStatus.textContent = "\u2713 Signed in as @" + (d.username || "user");
+      authDot.classList.add("ok");
+      authUser.textContent = d.username ? "@" + d.username : "";
+      setTimeout(() => overlay.classList.add("hidden"), 700);
+    } else if (d.done && !d.authenticated) {
+      clearInterval(pollTimer);
+      pollStatus.className = "poll-msg err";
+      pollStatus.textContent = "Authorization failed \u2014 try again.";
+      setTimeout(() => {
+        signinStep.style.display = "";
+        deviceStep.classList.remove("visible");
+        pollStatus.innerHTML = "";
+      }, 3000);
+    }
+  } catch { /* keep polling */ }
+}
+
+window.copyAuthCode = function (el) {
+  navigator.clipboard.writeText(el.textContent.trim()).then(() => {
+    el.style.background = "#1f6feb44";
+    setTimeout(() => (el.style.background = ""), 700);
+  });
+};
+
+// ── Chat ──────────────────────────────────────────────────────────────────
+window.newChat = function () {
+  convId = null;
+  msgList.innerHTML = "";
+  welcome.classList.remove("hidden");
+  promptEl.value = "";
+  autoResize();
+  promptEl.focus();
+};
+
+window.useSuggestion = function (card) {
+  promptEl.value = card.querySelector(".sug-text").textContent;
+  autoResize();
+  promptEl.focus();
+  send();
+};
+
+function scrollBottom() { chatScroll.scrollTop = chatScroll.scrollHeight; }
+
+const AVATAR_SVG = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"
+  style="color:#58a6ff" aria-hidden="true">
+  <path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58
+           0-.28-.01-1.02-.01-2C6 21.37 5.28 19.26 5.28 19.26c-.55-1.38-1.34-1.75-1.34-1.75
+           -1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1
+           .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22
+           -.13-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23A11.5 11.5 0 0 1 12 6.8c1.02 0
+           2.04.14 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.65.25 2.87.12 3.17
+           .77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.49 5.92.43.37.81 1.1.81 2.22
+           0 1.6-.01 2.9-.01 3.29 0 .32.21.7.83.58C20.56 21.8 24 17.3 24 12
+           24 5.37 18.63 0 12 0z"/>
+</svg>`;
+
+function addUserMsg(text) {
+  welcome.classList.add("hidden");
+  const row = document.createElement("div");
+  row.className = "msg user";
+  row.innerHTML = `<div class="bubble">${escHtml(text).replace(/\n/g,"<br>")}</div>
+                   <div class="avatar">You</div>`;
+  msgList.appendChild(row);
+  scrollBottom();
+}
+
+function addAssistantMsg(thinking) {
+  const row = document.createElement("div");
+  row.className = "msg assistant";
+  const inner = thinking
+    ? `<div class="thinking"><span></span><span></span><span></span></div>`
+    : "";
+  row.innerHTML = `<div class="avatar">${AVATAR_SVG}</div>
+                   <div class="bubble">${inner}</div>`;
+  msgList.appendChild(row);
+  scrollBottom();
+  return row.querySelector(".bubble");
+}
+
+// ── Send ──────────────────────────────────────────────────────────────────
+window.send = async function () {
+  const prompt = promptEl.value.trim();
+  if (!prompt || isStreaming) return;
+  if (!convId) convId = crypto.randomUUID();
+
+  promptEl.value = "";
+  autoResize();
+  isStreaming = true;
+  sendBtn.disabled = true;
+
+  addUserMsg(prompt);
+  const bubble = addAssistantMsg(true);   // shows thinking dots
+
+  let rawText = "";
+
+  try {
+    const response = await fetch(httpBase + "/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, conversation_id: convId }),
+    });
+
+    if (!response.ok) {
+      const t = await response.text();
+      bubble.innerHTML = `<span style="color:#f85149">Error ${response.status}: ${escHtml(t)}</span>`;
+      return;
+    }
+
+    const reader  = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      const lines = buf.split("\n");
+      buf = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+
+        if (data === "[DONE]") {
+          // Final markdown render when stream finishes.
+          bubble.innerHTML = renderMd(rawText);
+          scrollBottom();
+          break;
+        }
+
+        try {
+          const chunk = JSON.parse(data);
+          if (chunk.error) {
+            bubble.innerHTML = `<span style="color:#f85149">${escHtml(chunk.error)}</span>`;
+            return;
+          }
+          const delta = chunk.choices?.[0]?.delta?.content || "";
+          rawText += delta;
+          // Show plain text while streaming for speed; markdown renders on [DONE].
+          bubble.textContent = rawText;
+          scrollBottom();
+        } catch { /* skip malformed chunk */ }
+      }
+    }
+  } catch (err) {
+    bubble.innerHTML = `<span style="color:#f85149">Network error: ${escHtml(err.message)}</span>`;
+  } finally {
+    isStreaming = false;
+    sendBtn.disabled = false;
+    promptEl.focus();
+  }
+};
+
+// ── Textarea auto-resize ──────────────────────────────────────────────────
+function autoResize() {
+  promptEl.style.height = "auto";
+  promptEl.style.height = Math.min(promptEl.scrollHeight, 180) + "px";
+}
+promptEl.addEventListener("input", autoResize);
+promptEl.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+checkAuth();
+})();
+</script>
+</body>
+</html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>GitHub Copilot &mdash; Home Assistant</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
