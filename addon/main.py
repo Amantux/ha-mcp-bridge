@@ -658,7 +658,7 @@ def _run_copilot_chat(prompt: str, history: list[dict] | None = None) -> str:
             "User-Agent": "ha-mcp-bridge/1.0",
             "Editor-Version": "ha-mcp-bridge/1.0",
             "Editor-Plugin-Version": "ha-mcp-bridge/1.0",
-            "Copilot-Integration-Id": "ha-mcp-bridge",
+            "Copilot-Integration-Id": "vscode",
             "openai-intent": "conversation-panel",
         },
     )
@@ -830,7 +830,7 @@ async def handle_chat_stream(request: aiohttp.web.Request) -> aiohttp.web.Stream
                 "Accept":                 "text/event-stream",
                 "User-Agent":             "ha-mcp-bridge/1.0",
                 "Editor-Version":         "ha-mcp-bridge/1.0",
-                "Copilot-Integration-Id": "ha-mcp-bridge",
+                "Copilot-Integration-Id": "vscode",
                 "openai-intent":          "conversation-panel",
             },
             timeout=aiohttp.ClientTimeout(total=90, connect=15),
