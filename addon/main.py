@@ -44,6 +44,7 @@ import subprocess
 import termios
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -411,42 +412,120 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
 
 
 # ---------------------------------------------------------------------------
-# /chat ΓÇö non-interactive call for HA conversation agent
+# GitHub Copilot Chat API  (used by the HA conversation agent via /chat)
+# ---------------------------------------------------------------------------
+# Flow:
+#  1. gh auth token  -> short-lived GitHub OAuth token (with "copilot" scope)
+#  2. GET github.com/copilot_internal/v2/token  -> Copilot bearer token
+#  3. POST api.githubcopilot.com/chat/completions (OpenAI-compatible)
 # ---------------------------------------------------------------------------
 
-def _run_copilot_chat(prompt: str) -> str:
-    """Run copilot suggest non-interactively for the HA conversation agent."""
-    if not _check_copilot():
+_copilot_api_token_cache: dict = {}
+
+
+def _get_copilot_api_token() -> str:
+    """Exchange the GitHub OAuth token for a short-lived Copilot API token.
+    Result is cached until 60 s before expiry."""
+    global _copilot_api_token_cache
+    now = time.time()
+    cached = _copilot_api_token_cache
+    if cached.get("token") and cached.get("expires_at", 0) > now + 60:
+        return cached["token"]
+
+    gh_token = _gh_token()
+    if not gh_token:
         raise RuntimeError(
-            "GitHub Copilot CLI is not available. "
-            "Please authenticate via the Copilot panel in the HA sidebar."
+            "Not authenticated with GitHub. "
+            "Sign in via the Copilot panel in the HA sidebar."
         )
-    copilot_bin = _copilot_path() or "copilot"
-    env = {**_copilot_env(), "NO_COLOR": "1"}
-    # copilot suggest -s sh <prompt>: suggest a shell command for the question.
-    result = subprocess.run(
-        [copilot_bin, "suggest", "-s", "sh", prompt],
-        input="\n",      # auto-accept first suggestion
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=60,
+
+    req = urllib.request.Request(
+        "https://api.github.com/copilot_internal/v2/token",
+        headers={
+            "Authorization": f"token {gh_token}",
+            "Accept": "application/json",
+            "User-Agent": "ha-mcp-bridge/1.0",
+        },
     )
-    combined = result.stdout + (("\n" + result.stderr) if result.stderr else "")
-    clean = ANSI.sub("", combined).strip()
-    if not clean:
-        # fallback: try explain (for when user pastes a command to understand)
-        r2 = subprocess.run(
-            [copilot_bin, "explain", prompt],
-            capture_output=True, text=True, env=env, timeout=60,
-        )
-        clean = ANSI.sub("", r2.stdout + r2.stderr).strip()
-    if not clean:
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        logger.error("Copilot token exchange HTTP %s: %s", exc.code, body[:300])
         raise RuntimeError(
-            "Copilot returned no output. Ensure you are signed in via the "
-            "sidebar panel and your GitHub account has Copilot access."
+            f"GitHub returned HTTP {exc.code} during Copilot token exchange. "
+            "Ensure your account has Copilot access and re-authenticate with "
+            "the --scopes copilot flag (sign out and back in via the sidebar)."
         )
-    return clean
+
+    token = data.get("token")
+    if not token:
+        raise RuntimeError("Copilot token exchange returned no token: " + str(data))
+
+    # expires_at: "2026-01-01T00:30:00Z"
+    from datetime import datetime, timezone
+    expires_str = data.get("expires_at", "")
+    try:
+        expires_at = datetime.fromisoformat(expires_str.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        expires_at = now + 1740  # 29 min fallback
+
+    _copilot_api_token_cache = {"token": token, "expires_at": expires_at}
+    logger.info("Copilot API token obtained (expires in %.0f s)", expires_at - now)
+    return token
+
+
+def _run_copilot_chat(prompt: str) -> str:
+    """Call GitHub Copilot Chat API for the HA conversation agent.
+    Uses the OpenAI-compatible endpoint at api.githubcopilot.com."""
+    token = _get_copilot_api_token()
+
+    payload = json.dumps({
+        "model": "gpt-4o",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are GitHub Copilot, an AI assistant embedded in Home Assistant. "
+                    "Help the user with shell commands, code questions, and technical tasks. "
+                    "Be concise and practical."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "n": 1,
+        "temperature": 0,
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.githubcopilot.com/chat/completions",
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "ha-mcp-bridge/1.0",
+            "Editor-Version": "ha-mcp-bridge/1.0",
+            "Editor-Plugin-Version": "ha-mcp-bridge/1.0",
+            "Copilot-Integration-Id": "ha-mcp-bridge",
+            "openai-intent": "conversation-panel",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+        content = data["choices"][0]["message"]["content"]
+        return content.strip() or "(no response)"
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        logger.error("Copilot chat API HTTP %s: %s", exc.code, body[:500])
+        raise RuntimeError(f"Copilot API error {exc.code}: {body[:300]}")
+    except Exception as exc:
+        logger.exception("Copilot chat API call failed")
+        raise RuntimeError(str(exc))
 
 
 async def handle_chat(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -466,7 +545,6 @@ async def handle_chat(request: aiohttp.web.Request) -> aiohttp.web.Response:
     except Exception as exc:
         logger.exception("Error in /chat")
         return aiohttp.web.json_response({"error": str(exc)}, status=500)
-
 
 # ---------------------------------------------------------------------------
 # HTTP handlers

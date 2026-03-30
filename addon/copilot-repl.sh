@@ -46,11 +46,11 @@ while true; do
             ;;
         suggest\ *)
             printf "\n"
-            copilot suggest -s sh "${input#suggest }" 2>&1
+            copilot suggest "${input#suggest }" 2>&1
             ;;
         *)
             printf "\n"
-            copilot suggest -s sh "$input" 2>&1
+            copilot suggest "$input" 2>&1
             ;;
     esac
 
