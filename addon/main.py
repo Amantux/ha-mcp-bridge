@@ -65,6 +65,10 @@ ANSI             = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 _COPILOT_PATH: str | None = None  # cached path to copilot binary
 
+# Conversation history keyed by conversation_id (multi-turn chat support).
+_conversation_histories: dict[str, list[dict]] = {}
+_MAX_HISTORY_TURNS = 10  # keep last N exchanges (user+assistant pairs)
+
 # ---------------------------------------------------------------------------
 # Options / Supervisor discovery
 # ---------------------------------------------------------------------------
@@ -476,24 +480,28 @@ def _get_copilot_api_token() -> str:
     return token
 
 
-def _run_copilot_chat(prompt: str) -> str:
+def _run_copilot_chat(prompt: str, history: list[dict] | None = None) -> str:
     """Call GitHub Copilot Chat API for the HA conversation agent.
-    Uses the OpenAI-compatible endpoint at api.githubcopilot.com."""
+    Uses the OpenAI-compatible endpoint at api.githubcopilot.com.
+    `history` is a list of {role, content} dicts for multi-turn context."""
     token = _get_copilot_api_token()
+
+    system_msg = {
+        "role": "system",
+        "content": (
+            "You are GitHub Copilot, an AI assistant embedded in Home Assistant. "
+            "Help the user with home automation, shell commands, code questions, "
+            "and technical tasks. Be concise and practical."
+        ),
+    }
+    messages: list[dict] = [system_msg]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
 
     payload = json.dumps({
         "model": "gpt-4o",
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are GitHub Copilot, an AI assistant embedded in Home Assistant. "
-                    "Help the user with shell commands, code questions, and technical tasks. "
-                    "Be concise and practical."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
+        "messages": messages,
         "stream": False,
         "n": 1,
         "temperature": 0,
@@ -536,9 +544,21 @@ async def handle_chat(request: aiohttp.web.Request) -> aiohttp.web.Response:
     prompt = str(body.get("prompt", "")).strip()
     if not prompt:
         return aiohttp.web.json_response({"error": "prompt required"}, status=400)
+    # Optional multi-turn conversation tracking.
+    conv_id = str(body.get("conversation_id", "")).strip() or None
+    history = _conversation_histories.get(conv_id, []) if conv_id else []
     try:
-        output = await asyncio.get_running_loop().run_in_executor(
-            None, _run_copilot_chat, prompt)
+        loop = asyncio.get_running_loop()
+        output = await loop.run_in_executor(
+            None, _run_copilot_chat, prompt, history)
+        # Persist history for multi-turn context.
+        if conv_id:
+            updated = list(history) + [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": output},
+            ]
+            # Trim to keep last N turns (each turn = 2 messages).
+            _conversation_histories[conv_id] = updated[-(_MAX_HISTORY_TURNS * 2):]
         return aiohttp.web.json_response({"output": output})
     except RuntimeError as exc:
         return aiohttp.web.json_response({"error": str(exc)})

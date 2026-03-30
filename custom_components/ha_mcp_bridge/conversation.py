@@ -28,7 +28,12 @@ import asyncio
 import logging
 
 from aiohttp import ClientError, ClientTimeout
-from homeassistant.components.conversation import ConversationEntity, ConversationInput, ConversationResult
+from homeassistant.components.conversation import (
+    MATCH_ALL,
+    ConversationEntity,
+    ConversationInput,
+    ConversationResult,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client, intent
@@ -76,9 +81,8 @@ class HaMcpBridgeCopilotEntity(ConversationEntity):
         self._chat_url = health_url.replace("/health", "/chat")
 
     @property
-    def supported_languages(self) -> str:
-        # "*" = accept all languages (MATCH_ALL).
-        return "*"
+    def supported_languages(self) -> list[str] | str:
+        return MATCH_ALL
 
     async def async_process(
         self, user_input: ConversationInput
@@ -90,7 +94,10 @@ class HaMcpBridgeCopilotEntity(ConversationEntity):
         try:
             async with session.post(
                 self._chat_url,
-                json={"prompt": user_input.text},
+                json={
+                    "prompt": user_input.text,
+                    "conversation_id": user_input.conversation_id,
+                },
                 timeout=_CHAT_TIMEOUT,
             ) as resp:
                 resp.raise_for_status()
