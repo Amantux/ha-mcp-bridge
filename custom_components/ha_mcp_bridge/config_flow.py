@@ -41,6 +41,8 @@ class HaMcpBridgeOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         current = self.config_entry.options
+        # Merge entry data as fallback so existing values show up correctly.
+        entry_data = self.config_entry.data
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -49,6 +51,16 @@ class HaMcpBridgeOptionsFlow(config_entries.OptionsFlow):
                         CONF_UPDATE_INTERVAL,
                         default=int(current.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)),
                     ): vol.All(int, vol.Range(min=10, max=3600)),
+                    vol.Optional(
+                        CONF_MCP_URL,
+                        default=str(current.get(CONF_MCP_URL,
+                                                entry_data.get(CONF_MCP_URL, DEFAULT_MCP_URL))),
+                    ): str,
+                    vol.Optional(
+                        CONF_MCP_TOKEN,
+                        default=str(current.get(CONF_MCP_TOKEN,
+                                                entry_data.get(CONF_MCP_TOKEN, DEFAULT_MCP_TOKEN))),
+                    ): str,
                 }
             ),
         )
@@ -105,7 +117,12 @@ class HaMcpBridgeFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="cannot_connect")
 
         self._hassio_discovery = discovery_info
-        self._entry_data = {CONF_HOST: DEFAULT_HOST, CONF_PORT: port}
+        self._entry_data = {
+            CONF_HOST: DEFAULT_HOST,
+            CONF_PORT: port,
+            # Pre-fill the built-in MCP server URL so users don't have to type it.
+            CONF_MCP_URL: f"http://127.0.0.1:{port}/mcp/sse",
+        }
         self._entry_title = discovery_info.name
         return await self.async_step_hassio_confirm()
 

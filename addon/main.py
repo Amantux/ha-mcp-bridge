@@ -584,6 +584,7 @@ def _write_mcp_config() -> None:
 
 
 
+def _ensure_copilot() -> None:
     """Safety-net install in case run.sh's npm install was skipped or failed."""
     if _check_copilot():
         return

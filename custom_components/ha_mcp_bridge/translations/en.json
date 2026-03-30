@@ -42,10 +42,14 @@
       "init": {
         "title": "HA MCP Bridge options",
         "data": {
-          "update_interval": "Poll interval (seconds)"
+          "update_interval": "Poll interval (seconds)",
+          "mcp_url": "MCP Server URL",
+          "mcp_token": "MCP Access Token"
         },
         "data_description": {
-          "update_interval": "How often HA fetches the add-on health status. Minimum 10 s, maximum 3600 s."
+          "update_interval": "How often HA fetches the add-on health status. Minimum 10 s, maximum 3600 s.",
+          "mcp_url": "URL of the MCP Server SSE endpoint. Default: http://127.0.0.1:8099/mcp/sse",
+          "mcp_token": "Bearer token for the MCP server. Leave blank if not required."
         }
       }
     }
