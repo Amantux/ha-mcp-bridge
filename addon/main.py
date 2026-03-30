@@ -259,6 +259,11 @@ def start_auth_login() -> dict:
     interval         = int(data.get("interval", 5))
     expires_in       = int(data.get("expires_in", 900))
 
+    if data.get("error"):
+        raise RuntimeError(data.get("error_description") or data.get("error", "Unknown GitHub error"))
+    if not user_code or not device_code:
+        raise RuntimeError(f"GitHub did not return a device code. Response: {data}")
+
     _device_flow_state = {
         "device_code": device_code,
         "interval":    interval,
@@ -692,8 +697,12 @@ async def handle_auth_status(request: aiohttp.web.Request) -> aiohttp.web.Respon
 
 async def handle_auth_start(request: aiohttp.web.Request) -> aiohttp.web.Response:
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, start_auth_login)
-    return aiohttp.web.json_response(result)
+    try:
+        result = await loop.run_in_executor(None, start_auth_login)
+        return aiohttp.web.json_response(result)
+    except Exception as exc:
+        logger.error("handle_auth_start error: %s", exc)
+        return aiohttp.web.json_response({"error": str(exc), "code": "", "url": "", "lines": []}, status=200)
 
 
 async def handle_auth_poll(request: aiohttp.web.Request) -> aiohttp.web.Response:
