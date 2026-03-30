@@ -211,34 +211,54 @@ def start_auth_login() -> dict:
             _auth_proc.kill()
         _auth_lines = []
 
+    # --web uses GitHub device flow: gh prints a code, user enters it at
+    # github.com/login/device, then gh polls until authorized and exits.
+    # stdin=PIPE lets us send a newline past gh's "Press Enter to open
+    # browser..." prompt — there is no browser in a container.
     proc = subprocess.Popen(
         ["gh", "auth", "login",
          "--hostname",     "github.com",
          "--git-protocol", "https",
-         "--scopes",       "copilot",
          "--web"],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        env=_gh_env(), text=True,
+        env=_gh_env(), text=True, bufsize=1,
     )
     with _auth_lock:
         _auth_proc = proc
+
+    # Send Enter so gh skips "Press Enter to open github.com in your browser..."
+    try:
+        proc.stdin.write("\n")
+        proc.stdin.flush()
+    except Exception:
+        pass
+
     threading.Thread(target=_auth_reader, args=(proc,), daemon=True).start()
 
-    # Give the process a moment to emit the device code.
-    time.sleep(3)
+    # Poll for the device code for up to 8 seconds.
+    code, url = "", "https://github.com/login/device"
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        time.sleep(0.4)
+        with _auth_lock:
+            snapshot = list(_auth_lines)
+        for line in snapshot:
+            # Device code: exactly XXXX-XXXX (4 uppercase alphanum, dash, 4 more)
+            m = re.search(r'\b([A-Z0-9]{4}-[A-Z0-9]{4})\b', line)
+            if m:
+                code = m.group(1)
+            if "github.com/login/device" in line:
+                for part in line.split():
+                    if "github.com/login/device" in part:
+                        url = (part if part.startswith("http")
+                               else "https://github.com/login/device")
+        if code:
+            break
+
     with _auth_lock:
         lines = list(_auth_lines)
-
-    code, url = "", "https://github.com/login/device"
-    for line in lines:
-        low = line.lower()
-        if "one-time code" in low or "copy your" in low:
-            code = line.split(":")[-1].strip()
-        if "github.com/login/device" in line:
-            for part in line.split():
-                if part.startswith("https://"):
-                    url = part
     return {"code": code, "url": url, "lines": lines}
 
 
