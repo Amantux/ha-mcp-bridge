@@ -644,7 +644,8 @@ def _run_copilot_chat(prompt: str, history: list[dict] | None = None) -> str:
         "messages": messages,
         "stream": False,
         "n": 1,
-        "temperature": 0,
+        "temperature": 0.1,
+        "max_tokens": 4096,
     }).encode()
 
     req = urllib.request.Request(
@@ -665,7 +666,13 @@ def _run_copilot_chat(prompt: str, history: list[dict] | None = None) -> str:
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read())
-        content = data["choices"][0]["message"]["content"]
+        logger.debug("Copilot API response keys: %s", list(data.keys()))
+        choices = data.get("choices") or []
+        if not choices:
+            # Surface the full response so we can see what came back
+            logger.error("Copilot API returned no choices: %s", data)
+            raise RuntimeError(f"Copilot API returned no choices: {data}")
+        content = choices[0].get("message", {}).get("content", "")
         return content.strip() or "(no response)"
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")
@@ -871,11 +878,14 @@ async def handle_chat_stream(request: aiohttp.web.Request) -> aiohttp.web.Stream
                         return resp
                     try:
                         chunk  = json.loads(data_str)
-                        delta  = chunk["choices"][0]["delta"].get("content") or ""
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        delta  = choices[0].get("delta", {}).get("content") or ""
                         if delta:
                             full_buf.append(delta)
                         await sse(data_str)   # forward raw chunk verbatim
-                    except (KeyError, json.JSONDecodeError):
+                    except (KeyError, IndexError, json.JSONDecodeError):
                         pass
 
     except asyncio.CancelledError:

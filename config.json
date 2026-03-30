@@ -1,6 +1,6 @@
 {
   "name": "HA MCP Bridge",
-  "version": "0.1.35",
+  "version": "0.1.36",
   "slug": "ha-mcp-bridge",
   "description": "GitHub Copilot chat panel for Home Assistant, backed by an MCP server bridge.",
   "url": "https://github.com/Amantux/ha-mcp-bridge",
