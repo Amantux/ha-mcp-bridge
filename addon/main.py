@@ -58,6 +58,7 @@ logger = logging.getLogger("ha_mcp_bridge")
 OPTIONS_PATH     = Path("/data/options.json")
 STATIC_DIR       = Path(__file__).parent / "static"
 SUPERVISOR_API   = "http://supervisor"
+HA_API           = "http://supervisor/core/api"
 GH_CONFIG_DIR    = "/data/gh"
 start_time       = time.time()
 
@@ -69,6 +70,166 @@ _COPILOT_PATH: str | None = None  # cached path to copilot binary
 # Conversation history keyed by conversation_id (multi-turn chat support).
 _conversation_histories: dict[str, list[dict]] = {}
 _MAX_HISTORY_TURNS = 10  # keep last N exchanges (user+assistant pairs)
+
+# ---------------------------------------------------------------------------
+# Home Assistant MCP tools — exposed to Copilot as OpenAI function tools
+# ---------------------------------------------------------------------------
+
+HA_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "ha_get_states",
+            "description": (
+                "Get the current state of Home Assistant entities. "
+                "Optionally filter by domain (e.g. 'light', 'switch', 'sensor', 'climate'). "
+                "Returns entity_id, state, and key attributes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "description": "Optional domain filter e.g. 'light', 'switch', 'sensor', 'climate', 'media_player'. Omit to get all."
+                    },
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Optional specific entity_id to get (e.g. 'light.living_room'). If set, domain is ignored."
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ha_call_service",
+            "description": (
+                "Call a Home Assistant service to control devices. "
+                "Examples: turn lights on/off, set thermostat temperature, lock doors, play media. "
+                "Common: domain='light' service='turn_on' entity_id='light.living_room' data={'brightness':200}"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "description": "Service domain e.g. 'light', 'switch', 'climate', 'media_player', 'lock', 'script', 'automation'"
+                    },
+                    "service": {
+                        "type": "string",
+                        "description": "Service name e.g. 'turn_on', 'turn_off', 'toggle', 'set_temperature', 'lock', 'unlock'"
+                    },
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Target entity_id (e.g. 'light.living_room') or comma-separated list"
+                    },
+                    "service_data": {
+                        "type": "object",
+                        "description": "Additional service data e.g. {\"brightness\": 200, \"temperature\": 72, \"color_temp\": 300}"
+                    }
+                },
+                "required": ["domain", "service"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ha_get_history",
+            "description": "Get the recent state history for a specific entity over the last N hours.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {
+                        "type": "string",
+                        "description": "The entity_id to get history for (e.g. 'sensor.temperature')"
+                    },
+                    "hours": {
+                        "type": "number",
+                        "description": "How many hours of history to retrieve (default 3, max 24)"
+                    }
+                },
+                "required": ["entity_id"]
+            }
+        }
+    },
+]
+
+
+def _ha_headers() -> dict:
+    return {"Authorization": f"Bearer {SUPERVISOR_TOKEN}", "Content-Type": "application/json"}
+
+
+def _call_ha_tool(name: str, arguments: dict) -> str:
+    """Execute an HA tool call and return the result as a string."""
+    try:
+        if name == "ha_get_states":
+            entity_id = arguments.get("entity_id", "").strip()
+            domain    = arguments.get("domain", "").strip()
+            if entity_id:
+                url = f"{HA_API}/states/{entity_id}"
+                req = urllib.request.Request(url, headers=_ha_headers())
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    s = json.loads(r.read())
+                return json.dumps({"entity_id": s["entity_id"], "state": s["state"],
+                                   "attributes": s.get("attributes", {})}, indent=2)
+            else:
+                url = f"{HA_API}/states"
+                req = urllib.request.Request(url, headers=_ha_headers())
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    states = json.loads(r.read())
+                if domain:
+                    states = [s for s in states if s["entity_id"].startswith(domain + ".")]
+                # Return condensed view
+                result = [{"entity_id": s["entity_id"], "state": s["state"],
+                           "friendly_name": s.get("attributes", {}).get("friendly_name", "")}
+                          for s in states[:80]]
+                return json.dumps(result, indent=2)
+
+        elif name == "ha_call_service":
+            domain   = arguments["domain"]
+            service  = arguments["service"]
+            svc_data = dict(arguments.get("service_data") or {})
+            entity_id = arguments.get("entity_id", "")
+            if entity_id:
+                svc_data["entity_id"] = entity_id
+            url     = f"{HA_API}/services/{domain}/{service}"
+            payload = json.dumps(svc_data).encode()
+            req = urllib.request.Request(url, data=payload, method="POST",
+                                         headers=_ha_headers())
+            with urllib.request.urlopen(req, timeout=15) as r:
+                changed = json.loads(r.read())
+            changed_ids = [s.get("entity_id") for s in (changed or [])]
+            return json.dumps({"success": True, "changed": changed_ids})
+
+        elif name == "ha_get_history":
+            entity_id = arguments["entity_id"]
+            hours     = min(float(arguments.get("hours", 3)), 24)
+            from datetime import datetime, timedelta, timezone
+            since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+            url   = f"{HA_API}/history/period/{since}?filter_entity_id={entity_id}&minimal_response=true"
+            req   = urllib.request.Request(url, headers=_ha_headers())
+            with urllib.request.urlopen(req, timeout=15) as r:
+                history = json.loads(r.read())
+            # Flatten and trim
+            flat = []
+            for timeline in (history or []):
+                for entry in timeline[-20:]:
+                    flat.append({"t": entry.get("last_changed", ""), "state": entry.get("state", "")})
+            return json.dumps(flat, indent=2)
+
+        else:
+            return json.dumps({"error": f"Unknown tool: {name}"})
+
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        logger.error("HA tool %s HTTP %s: %s", name, exc.code, body[:200])
+        return json.dumps({"error": f"HA API error {exc.code}: {body[:200]}"})
+    except Exception as exc:
+        logger.error("HA tool %s failed: %s", name, exc)
+        return json.dumps({"error": str(exc)})
 
 # ---------------------------------------------------------------------------
 # Options / Supervisor discovery
@@ -621,17 +782,19 @@ def _get_copilot_api_token() -> tuple[str, str]:
 
 
 def _run_copilot_chat(prompt: str, history: list[dict] | None = None) -> str:
-    """Call GitHub Copilot Chat API for the HA conversation agent.
-    Uses the OpenAI-compatible endpoint at api.githubcopilot.com.
-    `history` is a list of {role, content} dicts for multi-turn context."""
+    """Call GitHub Copilot Chat API with HA tool support.
+    Runs the full tool-call loop: Copilot can call HA tools (get states,
+    call services, get history) and we execute them before returning."""
     token, scheme = _get_copilot_api_token()
 
     system_msg = {
         "role": "system",
         "content": (
             "You are GitHub Copilot, an AI assistant embedded in Home Assistant. "
-            "Help the user with home automation, shell commands, code questions, "
-            "and technical tasks. Be concise and practical."
+            "You have access to real-time Home Assistant tools to query device states, "
+            "control devices, and view history. Use them whenever the user asks about "
+            "their home, devices, sensors, or wants to control something. "
+            "Be concise and practical."
         ),
     }
     messages: list[dict] = [system_msg]
@@ -639,52 +802,87 @@ def _run_copilot_chat(prompt: str, history: list[dict] | None = None) -> str:
         messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
-    payload = json.dumps({
-        "model": "gpt-4o",
-        "messages": messages,
-        "stream": False,
-        "n": 1,
-        "temperature": 0.1,
-        "max_tokens": 4096,
-    }).encode()
+    api_headers = {
+        "Authorization": f"{scheme} {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "GitHubCopilotChat/0.12.0",
+        "Editor-Version": "vscode/1.85.1",
+        "Editor-Plugin-Version": "copilot-chat/0.12.0",
+        "Openai-Organization": "github-copilot",
+        "openai-intent": "conversation-panel",
+    }
 
-    req = urllib.request.Request(
-        "https://api.githubcopilot.com/chat/completions",
-        data=payload,
-        method="POST",
-        headers={
-            "Authorization": f"{scheme} {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "GitHubCopilotChat/0.12.0",
-            "Editor-Version": "vscode/1.85.1",
-            "Editor-Plugin-Version": "copilot-chat/0.12.0",
-            "Openai-Organization": "github-copilot",
-            "openai-intent": "conversation-panel",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read())
-        logger.debug("Copilot API response keys: %s", list(data.keys()))
+    # Tool-call loop: keep calling until Copilot stops requesting tool calls.
+    for _iteration in range(8):   # hard cap — prevents runaway loops
+        payload = json.dumps({
+            "model": "gpt-4o",
+            "messages": messages,
+            "tools": HA_TOOLS,
+            "tool_choice": "auto",
+            "stream": False,
+            "n": 1,
+            "temperature": 0.1,
+            "max_tokens": 4096,
+        }).encode()
+
+        req = urllib.request.Request(
+            "https://api.githubcopilot.com/chat/completions",
+            data=payload, method="POST", headers=api_headers,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            logger.error("Copilot chat API HTTP %s: %s", exc.code, body[:500])
+            if exc.code in (401, 403):
+                global _copilot_api_token_cache
+                _copilot_api_token_cache = {}
+            raise RuntimeError(f"Copilot API error {exc.code}: {body[:300]}")
+
+        logger.debug("Copilot API response keys: %s  finish=%s",
+                     list(data.keys()),
+                     (data.get("choices") or [{}])[0].get("finish_reason"))
+
         choices = data.get("choices") or []
         if not choices:
-            # Surface the full response so we can see what came back
             logger.error("Copilot API returned no choices: %s", data)
             raise RuntimeError(f"Copilot API returned no choices: {data}")
-        content = choices[0].get("message", {}).get("content", "")
-        return content.strip() or "(no response)"
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace")
-        logger.error("Copilot chat API HTTP %s: %s", exc.code, body[:500])
-        if exc.code in (401, 403):
-            # Token rejected — clear cache so next call re-authenticates.
-            global _copilot_api_token_cache
-            _copilot_api_token_cache = {}
-        raise RuntimeError(f"Copilot API error {exc.code}: {body[:300]}")
-    except Exception as exc:
-        logger.exception("Copilot chat API call failed")
-        raise RuntimeError(str(exc))
+
+        choice       = choices[0]
+        finish_reason = choice.get("finish_reason", "")
+        msg          = choice.get("message", {})
+
+        # No tool calls — return final content.
+        if finish_reason != "tool_calls":
+            return (msg.get("content") or "").strip() or "(no response)"
+
+        # Copilot wants to call HA tools.
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            return (msg.get("content") or "").strip() or "(no response)"
+
+        # Add assistant message with tool_calls to conversation.
+        messages.append(msg)
+
+        # Execute each tool call and add results.
+        for tc in tool_calls:
+            fn   = tc.get("function", {})
+            name = fn.get("name", "")
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            logger.info("HA tool call: %s(%s)", name, args)
+            result = _call_ha_tool(name, args)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.get("id", ""),
+                "content": result,
+            })
+
+    return "(max tool iterations reached)"
 
 
 async def handle_chat(request: aiohttp.web.Request) -> aiohttp.web.Response:
