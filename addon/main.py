@@ -708,12 +708,10 @@ _copilot_api_token_cache: dict = {}
 def _get_copilot_api_token() -> tuple[str, str]:
     """Return (token, auth_scheme) for the Copilot Chat API.
 
-    Strategy:
-      1. Try GET copilot_internal/v2/token  →  short-lived copilot token (Bearer).
-      2. If 404 (no Copilot subscription tier OR endpoint moved), fall back to
-         the raw GitHub OAuth token with the 'token' scheme, which api.githubcopilot.com
-         also accepts for accounts with Copilot access.
-      3. If both fail, raise RuntimeError with a clear message.
+    Uses the exact same token flow as the GitHub Copilot CLI:
+      1. `gh api /copilot_internal/v2/token` — the same call the CLI makes.
+         This returns a short-lived Bearer token valid for ~30 min.
+      2. If gh api fails (old gh, no Copilot sub), fall back to raw OAuth token.
 
     Result is cached until 60 s before expiry.
     """
@@ -730,54 +728,66 @@ def _get_copilot_api_token() -> tuple[str, str]:
             "Sign in via the Copilot panel in the HA sidebar."
         )
 
-    # --- Attempt 1: internal token exchange -----------------------------------
-    req = urllib.request.Request(
-        "https://api.github.com/copilot_internal/v2/token",
-        headers={
-            "Authorization": f"token {gh_token}",
-            "Accept": "application/json",
-            "User-Agent": "ha-mcp-bridge/1.0",
-        },
-    )
+    # --- Attempt 1: gh api (exact same path the Copilot CLI uses) -------------
     try:
+        r = subprocess.run(
+            ["gh", "api", "--header", "Accept: application/json",
+             "https://api.github.com/copilot_internal/v2/token"],
+            capture_output=True, text=True, env=_gh_env(), timeout=15,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            data = json.loads(r.stdout)
+            token = data.get("token", "")
+            if token:
+                from datetime import datetime
+                try:
+                    expires_at = datetime.fromisoformat(
+                        data.get("expires_at", "").replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    expires_at = now + 1740
+                _copilot_api_token_cache = {
+                    "token": token, "scheme": "Bearer", "expires_at": expires_at}
+                logger.info("Copilot token via gh api (expires in %.0f s)", expires_at - now)
+                return token, "Bearer"
+        logger.warning("gh api copilot token failed (rc=%d): %s", r.returncode, r.stderr[:200])
+    except Exception as exc:
+        logger.warning("gh api copilot token exception: %s", exc)
+
+    # --- Attempt 2: direct urllib with OAuth token ----------------------------
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/copilot_internal/v2/token",
+            headers={
+                "Authorization": f"token {gh_token}",
+                "Accept": "application/json",
+                "User-Agent": "GitHubCopilotChat/0.12.0",
+                "Editor-Version": "vscode/1.85.1",
+            },
+        )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
-        token = data.get("token")
+        token = data.get("token", "")
         if token:
             from datetime import datetime
-            expires_str = data.get("expires_at", "")
             try:
                 expires_at = datetime.fromisoformat(
-                    expires_str.replace("Z", "+00:00")).timestamp()
+                    data.get("expires_at", "").replace("Z", "+00:00")).timestamp()
             except Exception:
-                expires_at = now + 1740  # 29 min fallback
+                expires_at = now + 1740
             _copilot_api_token_cache = {
                 "token": token, "scheme": "Bearer", "expires_at": expires_at}
-            logger.info("Copilot internal token obtained (expires in %.0f s)",
-                        expires_at - now)
+            logger.info("Copilot token via urllib (expires in %.0f s)", expires_at - now)
             return token, "Bearer"
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            logger.warning(
-                "copilot_internal/v2/token returned 404 — "
-                "falling back to direct OAuth token auth. "
-                "(Ensure your GitHub account has an active Copilot subscription.)"
-            )
-        else:
-            body = exc.read().decode(errors="replace")
-            logger.error("Copilot token exchange HTTP %s: %s", exc.code, body[:300])
-            raise RuntimeError(
-                f"GitHub returned HTTP {exc.code} during Copilot token exchange. "
-                "Ensure your account has Copilot access and re-authenticate via "
-                "the sidebar (sign out then sign back in)."
-            )
+        body = exc.read().decode(errors="replace")
+        logger.warning("copilot_internal/v2/token HTTP %s: %s", exc.code, body[:300])
+    except Exception as exc:
+        logger.warning("copilot_internal/v2/token exception: %s", exc)
 
-    # --- Attempt 2: OAuth token directly --------------------------------------
-    # api.githubcopilot.com accepts GitHub OAuth tokens directly (scheme "token").
-    # Cache for 5 min so we retry the internal exchange periodically.
+    # --- Attempt 3: raw OAuth token (last resort) ------------------------------
+    logger.warning("Using raw OAuth token — Copilot API may reject this if account lacks sub")
     _copilot_api_token_cache = {
         "token": gh_token, "scheme": "token", "expires_at": now + 300}
-    logger.info("Using GitHub OAuth token directly with Copilot API (fallback mode)")
     return gh_token, "token"
 
 
@@ -818,8 +828,8 @@ def _run_copilot_chat(prompt: str, history: list[dict] | None = None) -> str:
         payload = json.dumps({
             "model": "gpt-4o",
             "messages": messages,
-            "tools": HA_TOOLS,
-            "tool_choice": "auto",
+            "tools": HA_TOOLS if SUPERVISOR_TOKEN else [],
+            "tool_choice": "auto" if SUPERVISOR_TOKEN else "none",
             "stream": False,
             "n": 1,
             "temperature": 0.1,
