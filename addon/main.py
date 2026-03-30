@@ -558,7 +558,32 @@ def _check_copilot() -> bool:
     return bool(_copilot_path())
 
 
-def _ensure_copilot() -> None:
+def _get_copilot_path() -> str:
+    """Return the copilot binary path, raising if not found."""
+    p = _copilot_path()
+    if not p:
+        raise FileNotFoundError("copilot binary not found; check add-on logs")
+    return p
+
+
+def _write_mcp_config() -> None:
+    """Write ~/.copilot/mcp.json so the copilot CLI auto-loads the HA MCP server."""
+    config_dir = Path("/root/.copilot")
+    config_dir.mkdir(parents=True, exist_ok=True)
+    mcp_path = config_dir / "mcp.json"
+    mcp_config = {
+        "mcpServers": {
+            "home-assistant": {
+                "url": f"http://localhost:{PORT}/mcp/sse",
+                "description": "Home Assistant — query entities, call services, view history",
+            }
+        }
+    }
+    mcp_path.write_text(json.dumps(mcp_config, indent=2))
+    logger.info("Wrote MCP config to %s", mcp_path)
+
+
+
     """Safety-net install in case run.sh's npm install was skipped or failed."""
     if _check_copilot():
         return
@@ -611,18 +636,17 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
 
 
 
-    # Spawn the REPL wrapper script — this keeps the session alive.
-    # copilot is a one-shot CLI (exits after each response); the wrapper
-    # loops to give a persistent interactive terminal experience.
-    repl = Path(__file__).parent / "copilot-repl.sh"
+    # Run the copilot binary directly — it is an interactive agentic CLI.
+    copilot_bin = _get_copilot_path()
     env = _copilot_env()
     proc = subprocess.Popen(
-        ["/bin/sh", str(repl)],
+        [copilot_bin],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
         close_fds=True,
         start_new_session=True,
+        cwd="/config",
         env=env,
     )
     os.close(slave_fd)   # parent no longer needs the slave end
@@ -1107,6 +1131,251 @@ async def handle_chat_stream(request: aiohttp.web.Request) -> aiohttp.web.Stream
 
 
 # ---------------------------------------------------------------------------
+# HA MCP Server — Model Context Protocol (SSE transport)
+# ---------------------------------------------------------------------------
+# Implements the MCP SSE transport spec so the copilot CLI can connect via
+# the entry in ~/.copilot/mcp.json written at startup.
+#
+# Transport:
+#   GET  /mcp/sse              — SSE stream; first event: endpoint URL
+#   POST /mcp/message?sid=...  — client sends JSON-RPC 2.0 messages here
+#
+# Methods supported:
+#   initialize      — handshake
+#   tools/list      — enumerate HA tools
+#   tools/call      — execute an HA tool
+
+_mcp_sessions: dict[str, asyncio.Queue] = {}  # sid -> queue of SSE payloads
+
+_MCP_TOOLS = [
+    {
+        "name": "ha_list_entities",
+        "description": "List Home Assistant entities. Optionally filter by domain (e.g. 'light', 'switch', 'sensor', 'climate'). Returns entity_id, state, and friendly_name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string", "description": "Domain to filter by, e.g. 'light'"}
+            },
+        },
+    },
+    {
+        "name": "ha_get_state",
+        "description": "Get the current state and attributes of a single Home Assistant entity.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["entity_id"],
+            "properties": {
+                "entity_id": {"type": "string", "description": "Entity ID, e.g. 'light.living_room'"}
+            },
+        },
+    },
+    {
+        "name": "ha_call_service",
+        "description": "Call a Home Assistant service to control a device or trigger an automation.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["domain", "service"],
+            "properties": {
+                "domain":       {"type": "string", "description": "Service domain, e.g. 'light'"},
+                "service":      {"type": "string", "description": "Service name, e.g. 'turn_on'"},
+                "entity_id":    {"type": "string", "description": "Target entity ID"},
+                "service_data": {"type": "object", "description": "Additional service data (e.g. brightness, color_temp)"},
+            },
+        },
+    },
+    {
+        "name": "ha_get_history",
+        "description": "Get recent state history for a Home Assistant entity.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["entity_id"],
+            "properties": {
+                "entity_id": {"type": "string"},
+                "hours":     {"type": "number", "description": "How many hours of history to return (default 6, max 24)"},
+            },
+        },
+    },
+]
+
+
+def _mcp_call_tool(name: str, arguments: dict) -> str:
+    """Execute an MCP tool call synchronously and return a JSON string result."""
+    if not SUPERVISOR_TOKEN:
+        return json.dumps({"error": "SUPERVISOR_TOKEN not set — HA API unavailable"})
+
+    headers = {
+        "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        if name == "ha_list_entities":
+            domain = arguments.get("domain", "")
+            req = urllib.request.Request(
+                f"{HA_API}/states",
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                states = json.loads(r.read())
+            if domain:
+                states = [s for s in states if s["entity_id"].startswith(f"{domain}.")]
+            result = [
+                {
+                    "entity_id": s["entity_id"],
+                    "state": s["state"],
+                    "friendly_name": s.get("attributes", {}).get("friendly_name", ""),
+                }
+                for s in states[:100]
+            ]
+            return json.dumps(result)
+
+        elif name == "ha_get_state":
+            entity_id = arguments["entity_id"]
+            req = urllib.request.Request(
+                f"{HA_API}/states/{entity_id}",
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.read().decode()
+
+        elif name == "ha_call_service":
+            domain   = arguments["domain"]
+            service  = arguments["service"]
+            data: dict = {}
+            if "entity_id" in arguments:
+                data["entity_id"] = arguments["entity_id"]
+            if "service_data" in arguments:
+                data.update(arguments["service_data"])
+            payload = json.dumps(data).encode()
+            req = urllib.request.Request(
+                f"{HA_API}/services/{domain}/{service}",
+                data=payload, method="POST", headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return r.read().decode() or '{"result": "ok"}'
+
+        elif name == "ha_get_history":
+            entity_id = arguments["entity_id"]
+            hours = min(float(arguments.get("hours", 6)), 24)
+            import datetime
+            start = (datetime.datetime.utcnow() -
+                     datetime.timedelta(hours=hours)).isoformat()
+            url = (f"{HA_API}/history/period/{start}"
+                   f"?filter_entity_id={entity_id}&minimal_response=true")
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data_hist = json.loads(r.read())
+            # data_hist is a list of lists; flatten and limit
+            flat = []
+            for timeline in data_hist:
+                flat.extend(timeline[-20:])
+            return json.dumps(flat[-40:])
+
+        else:
+            return json.dumps({"error": f"Unknown tool: {name}"})
+
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        return json.dumps({"error": f"HA API {exc.code}: {body[:300]}"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def _mcp_handle_request(req_obj: dict) -> dict:
+    """Process a single JSON-RPC 2.0 request and return the response dict."""
+    rpc_id = req_obj.get("id")
+    method = req_obj.get("method", "")
+    params = req_obj.get("params") or {}
+
+    def ok(result):
+        return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
+
+    def err(code, message):
+        return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": code, "message": message}}
+
+    if method == "initialize":
+        return ok({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "ha-mcp-bridge", "version": "0.1.39"},
+        })
+    elif method == "notifications/initialized":
+        return None  # notification — no response
+    elif method == "tools/list":
+        return ok({"tools": _MCP_TOOLS})
+    elif method == "tools/call":
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments") or {}
+        result_text = _mcp_call_tool(tool_name, arguments)
+        return ok({
+            "content": [{"type": "text", "text": result_text}],
+            "isError": False,
+        })
+    elif method == "ping":
+        return ok({})
+    else:
+        return err(-32601, f"Method not found: {method}")
+
+
+async def handle_mcp_sse(request: aiohttp.web.Request) -> aiohttp.web.StreamResponse:
+    """MCP SSE transport — GET /mcp/sse.
+    Sends an 'endpoint' event then streams JSON-RPC responses as 'message' events.
+    """
+    sid = str(id(request))
+    queue: asyncio.Queue = asyncio.Queue()
+    _mcp_sessions[sid] = queue
+
+    resp = aiohttp.web.StreamResponse(headers={
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+    })
+    await resp.prepare(request)
+
+    base = f"http://localhost:{PORT}"
+    endpoint_url = f"{base}/mcp/message?sid={sid}"
+    await resp.write(f"event: endpoint\ndata: {endpoint_url}\n\n".encode())
+
+    try:
+        while True:
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=30)
+                if payload is None:
+                    break
+                await resp.write(f"event: message\ndata: {payload}\n\n".encode())
+            except asyncio.TimeoutError:
+                await resp.write(b": keepalive\n\n")
+    except (asyncio.CancelledError, ConnectionResetError):
+        pass
+    finally:
+        _mcp_sessions.pop(sid, None)
+
+    return resp
+
+
+async def handle_mcp_message(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """MCP SSE transport — POST /mcp/message?sid=...
+    Receives JSON-RPC from the copilot CLI, processes it, puts response into SSE queue.
+    """
+    sid = request.rel_url.query.get("sid", "")
+    queue = _mcp_sessions.get(sid)
+
+    try:
+        req_obj = await request.json()
+    except Exception:
+        return aiohttp.web.Response(status=400, text="invalid JSON")
+
+    loop = asyncio.get_running_loop()
+    resp_obj = await loop.run_in_executor(None, _mcp_handle_request, req_obj)
+
+    if resp_obj is not None and queue is not None:
+        await queue.put(json.dumps(resp_obj))
+
+    return aiohttp.web.Response(status=202, text="accepted")
+
+
+# ---------------------------------------------------------------------------
 # App + entry point
 # ---------------------------------------------------------------------------
 
@@ -1117,6 +1386,8 @@ def make_app() -> aiohttp.web.Application:
     app.router.add_get("/health",        handle_health)
     app.router.add_get("/auth/status",   handle_auth_status)
     app.router.add_get("/ws",            ws_terminal)
+    app.router.add_get("/mcp/sse",       handle_mcp_sse)
+    app.router.add_post("/mcp/message",  handle_mcp_message)
     app.router.add_post("/chat",         handle_chat)
     app.router.add_post("/chat/stream",  handle_chat_stream)
     app.router.add_post("/auth/start",   handle_auth_start)
@@ -1127,6 +1398,11 @@ def make_app() -> aiohttp.web.Application:
 async def _main() -> None:
     register_discovery()
     loop = asyncio.get_running_loop()
+    # Write MCP config so copilot CLI auto-loads the HA MCP server.
+    try:
+        _write_mcp_config()
+    except Exception as exc:
+        logger.warning("Could not write MCP config: %s", exc)
     # Ensure copilot binary (runtime fallback for skipped build-time installs).
     await loop.run_in_executor(None, _ensure_copilot)
     app = make_app()
