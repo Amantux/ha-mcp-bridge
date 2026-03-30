@@ -45,6 +45,7 @@ import termios
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -190,89 +191,136 @@ def get_auth_status() -> dict:
                 "copilot_available": False, "error": str(exc)}
 
 
-_auth_proc:  subprocess.Popen | None = None
-_auth_lines: list[str]               = []
-_auth_lock                           = threading.Lock()
+# ---------------------------------------------------------------------------
+# GitHub Device OAuth Flow (pure Python — no gh subprocess for auth)
+# ---------------------------------------------------------------------------
+# gh writes interactive output directly to /dev/tty, bypassing stdout=PIPE,
+# so we can never reliably capture the device code from a subprocess.
+# Instead we implement the Device Flow ourselves: POST to GitHub, get the
+# user_code + device_code directly, poll for the access token, and write
+# the result to the gh config file so existing _gh_token() logic still works.
+# ---------------------------------------------------------------------------
+
+GH_OAUTH_CLIENT_ID = "Iv1.b507a08c87ecfe98"   # gh CLI's public OAuth App
+_device_flow_state: dict = {}                   # device_code / interval / expires_at
 
 
-def _auth_reader(proc: subprocess.Popen) -> None:
-    for raw in proc.stdout:  # type: ignore[union-attr]
-        line = ANSI.sub("", raw).rstrip()
-        logger.info("[gh auth] %s", line)
-        with _auth_lock:
-            _auth_lines.append(line)
-    proc.wait()
+def _save_gh_token(token: str) -> str:
+    """Write OAuth token to the gh config dir; return GitHub username."""
+    username = ""
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/user",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/json",
+                "User-Agent": "ha-mcp-bridge/1.0",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            username = json.loads(resp.read()).get("login", "")
+    except Exception as exc:
+        logger.warning("Could not fetch GitHub username: %s", exc)
+
+    config_dir = Path(GH_CONFIG_DIR)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    content = "github.com:\n"
+    content += f"    oauth_token: {token}\n"
+    content += "    git_protocol: https\n"
+    if username:
+        content += f"    user: {username}\n"
+    (config_dir / "hosts.yml").write_text(content)
+    logger.info("GitHub token saved for @%s", username or "unknown")
+    return username
 
 
 def start_auth_login() -> dict:
-    global _auth_proc, _auth_lines
-    with _auth_lock:
-        if _auth_proc and _auth_proc.poll() is None:
-            _auth_proc.kill()
-        _auth_lines = []
-
-    # --web uses GitHub device flow: gh prints a code, user enters it at
-    # github.com/login/device, then gh polls until authorized and exits.
-    # stdin=PIPE lets us send a newline past gh's "Press Enter to open
-    # browser..." prompt — there is no browser in a container.
-    proc = subprocess.Popen(
-        ["gh", "auth", "login",
-         "--hostname",     "github.com",
-         "--git-protocol", "https",
-         "--web"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        env=_gh_env(), text=True, bufsize=1,
+    """Start GitHub OAuth Device Flow. Returns {code, url}."""
+    global _device_flow_state
+    payload = urllib.parse.urlencode({
+        "client_id": GH_OAUTH_CLIENT_ID,
+        "scope":     "read:user",
+    }).encode()
+    req = urllib.request.Request(
+        "https://github.com/login/device/code",
+        data=payload,
+        headers={"Accept": "application/json", "User-Agent": "ha-mcp-bridge/1.0"},
     )
-    with _auth_lock:
-        _auth_proc = proc
-
-    # Send Enter so gh skips "Press Enter to open github.com in your browser..."
     try:
-        proc.stdin.write("\n")
-        proc.stdin.flush()
-    except Exception:
-        pass
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        logger.error("Device flow request failed: %s", exc)
+        raise RuntimeError(f"Failed to start GitHub auth: {exc}")
 
-    threading.Thread(target=_auth_reader, args=(proc,), daemon=True).start()
+    device_code      = data.get("device_code", "")
+    user_code        = data.get("user_code", "")
+    verification_uri = data.get("verification_uri", "https://github.com/login/device")
+    interval         = int(data.get("interval", 5))
+    expires_in       = int(data.get("expires_in", 900))
 
-    # Poll for the device code for up to 8 seconds.
-    code, url = "", "https://github.com/login/device"
-    deadline = time.time() + 8
-    while time.time() < deadline:
-        time.sleep(0.4)
-        with _auth_lock:
-            snapshot = list(_auth_lines)
-        for line in snapshot:
-            # Device code: exactly XXXX-XXXX (4 uppercase alphanum, dash, 4 more)
-            m = re.search(r'\b([A-Z0-9]{4}-[A-Z0-9]{4})\b', line)
-            if m:
-                code = m.group(1)
-            if "github.com/login/device" in line:
-                for part in line.split():
-                    if "github.com/login/device" in part:
-                        url = (part if part.startswith("http")
-                               else "https://github.com/login/device")
-        if code:
-            break
-
-    with _auth_lock:
-        lines = list(_auth_lines)
-    return {"code": code, "url": url, "lines": lines}
+    _device_flow_state = {
+        "device_code": device_code,
+        "interval":    interval,
+        "expires_at":  time.time() + expires_in,
+    }
+    logger.info("Device flow started: code=%s url=%s", user_code, verification_uri)
+    return {"code": user_code, "url": verification_uri, "lines": []}
 
 
 def poll_auth() -> dict:
-    with _auth_lock:
-        lines = list(_auth_lines)
-        done  = _auth_proc is None or _auth_proc.poll() is not None
-    s = get_auth_status() if done else {}
-    return {
-        "lines":         lines,
-        "done":          done,
-        "authenticated": s.get("authenticated", False),
-        "username":      s.get("username", ""),
-    }
+    """Poll GitHub token endpoint. Returns auth status; saves token when done."""
+    global _device_flow_state
+    state = _device_flow_state
+
+    # If no flow in progress, just return current auth status.
+    if not state.get("device_code"):
+        s = get_auth_status()
+        return {"done": True, "authenticated": s["authenticated"],
+                "username": s.get("username", ""), "lines": []}
+
+    if time.time() > state.get("expires_at", 0):
+        _device_flow_state = {}
+        return {"done": True, "authenticated": False,
+                "username": "", "lines": ["Code expired — please try again"]}
+
+    payload = urllib.parse.urlencode({
+        "client_id":   GH_OAUTH_CLIENT_ID,
+        "device_code": state["device_code"],
+        "grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
+    }).encode()
+    req = urllib.request.Request(
+        "https://github.com/login/oauth/access_token",
+        data=payload,
+        headers={"Accept": "application/json", "User-Agent": "ha-mcp-bridge/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        logger.warning("Token poll request failed: %s", exc)
+        return {"done": False, "authenticated": False, "username": "", "lines": []}
+
+    error = data.get("error", "")
+    if error == "authorization_pending":
+        return {"done": False, "authenticated": False, "username": "", "lines": []}
+    if error == "slow_down":
+        state["interval"] = state.get("interval", 5) + 5
+        return {"done": False, "authenticated": False, "username": "", "lines": []}
+    if error:
+        logger.warning("Device flow error: %s - %s", error, data.get("error_description", ""))
+        _device_flow_state = {}
+        return {"done": True, "authenticated": False, "username": "",
+                "lines": [data.get("error_description", error)]}
+
+    access_token = data.get("access_token", "")
+    if not access_token:
+        return {"done": False, "authenticated": False, "username": "", "lines": []}
+
+    username = _save_gh_token(access_token)
+    _device_flow_state = {}
+    return {"done": True, "authenticated": True, "username": username,
+            "lines": [f"Authenticated as @{username}"]}
 
 
 # ---------------------------------------------------------------------------
@@ -649,7 +697,10 @@ async def handle_auth_start(request: aiohttp.web.Request) -> aiohttp.web.Respons
 
 
 async def handle_auth_poll(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    return aiohttp.web.json_response(poll_auth())
+    # poll_auth() makes outbound HTTP calls — run in thread pool to avoid blocking the event loop.
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, poll_auth)
+    return aiohttp.web.json_response(result)
 
 
 # ---------------------------------------------------------------------------
