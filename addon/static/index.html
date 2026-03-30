@@ -527,14 +527,24 @@ async function pollAuth() {
     } else if (d.done && !d.authenticated) {
       clearInterval(pollTimer);
       pollStatus.className = "poll-msg err";
-      pollStatus.textContent = "Authorization failed \u2014 try again.";
+      const msg = (d.lines && d.lines[0]) || "Authorization failed";
+      pollStatus.textContent = "\u26a0 " + msg + " \u2014 try again.";
       setTimeout(() => {
         signinStep.style.display = "";
         deviceStep.classList.remove("visible");
         pollStatus.innerHTML = "";
-      }, 3000);
+      }, 4000);
+    } else if (d.error) {
+      // Non-fatal server error — show it but keep polling
+      pollStatus.className = "poll-msg err";
+      pollStatus.textContent = "\u26a0 Poll error: " + d.error;
     }
-  } catch { /* keep polling */ }
+    // else: authorization_pending — keep spinner, keep polling
+  } catch (err) {
+    // Network error — show it, keep polling
+    pollStatus.className = "poll-msg err";
+    pollStatus.textContent = "\u26a0 Network error: " + err.message;
+  }
 }
 
 window.copyAuthCode = function (el) {

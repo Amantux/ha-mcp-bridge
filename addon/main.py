@@ -320,9 +320,14 @@ def poll_auth() -> dict:
 
     access_token = data.get("access_token", "")
     if not access_token:
+        logger.warning("Poll: no access_token in response, full response: %s", data)
         return {"done": False, "authenticated": False, "username": "", "lines": []}
 
-    username = _save_gh_token(access_token)
+    try:
+        username = _save_gh_token(access_token)
+    except Exception as exc:
+        logger.error("_save_gh_token failed: %s", exc)
+        username = ""
     _device_flow_state = {}
     return {"done": True, "authenticated": True, "username": username,
             "lines": [f"Authenticated as @{username}"]}
@@ -708,8 +713,15 @@ async def handle_auth_start(request: aiohttp.web.Request) -> aiohttp.web.Respons
 async def handle_auth_poll(request: aiohttp.web.Request) -> aiohttp.web.Response:
     # poll_auth() makes outbound HTTP calls — run in thread pool to avoid blocking the event loop.
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, poll_auth)
-    return aiohttp.web.json_response(result)
+    try:
+        result = await loop.run_in_executor(None, poll_auth)
+        return aiohttp.web.json_response(result)
+    except Exception as exc:
+        logger.error("handle_auth_poll error: %s", exc)
+        return aiohttp.web.json_response(
+            {"done": False, "authenticated": False, "username": "", "lines": [], "error": str(exc)},
+            status=200,
+        )
 
 
 # ---------------------------------------------------------------------------
