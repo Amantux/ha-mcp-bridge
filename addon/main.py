@@ -427,14 +427,23 @@ async def ws_terminal(request: aiohttp.web.Request) -> aiohttp.web.WebSocketResp
 _copilot_api_token_cache: dict = {}
 
 
-def _get_copilot_api_token() -> str:
-    """Exchange the GitHub OAuth token for a short-lived Copilot API token.
-    Result is cached until 60 s before expiry."""
+def _get_copilot_api_token() -> tuple[str, str]:
+    """Return (token, auth_scheme) for the Copilot Chat API.
+
+    Strategy:
+      1. Try GET copilot_internal/v2/token  →  short-lived copilot token (Bearer).
+      2. If 404 (no Copilot subscription tier OR endpoint moved), fall back to
+         the raw GitHub OAuth token with the 'token' scheme, which api.githubcopilot.com
+         also accepts for accounts with Copilot access.
+      3. If both fail, raise RuntimeError with a clear message.
+
+    Result is cached until 60 s before expiry.
+    """
     global _copilot_api_token_cache
     now = time.time()
     cached = _copilot_api_token_cache
     if cached.get("token") and cached.get("expires_at", 0) > now + 60:
-        return cached["token"]
+        return cached["token"], cached.get("scheme", "Bearer")
 
     gh_token = _gh_token()
     if not gh_token:
@@ -443,6 +452,7 @@ def _get_copilot_api_token() -> str:
             "Sign in via the Copilot panel in the HA sidebar."
         )
 
+    # --- Attempt 1: internal token exchange -----------------------------------
     req = urllib.request.Request(
         "https://api.github.com/copilot_internal/v2/token",
         headers={
@@ -454,37 +464,50 @@ def _get_copilot_api_token() -> str:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
+        token = data.get("token")
+        if token:
+            from datetime import datetime
+            expires_str = data.get("expires_at", "")
+            try:
+                expires_at = datetime.fromisoformat(
+                    expires_str.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                expires_at = now + 1740  # 29 min fallback
+            _copilot_api_token_cache = {
+                "token": token, "scheme": "Bearer", "expires_at": expires_at}
+            logger.info("Copilot internal token obtained (expires in %.0f s)",
+                        expires_at - now)
+            return token, "Bearer"
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace")
-        logger.error("Copilot token exchange HTTP %s: %s", exc.code, body[:300])
-        raise RuntimeError(
-            f"GitHub returned HTTP {exc.code} during Copilot token exchange. "
-            "Ensure your account has Copilot access and re-authenticate with "
-            "the --scopes copilot flag (sign out and back in via the sidebar)."
-        )
+        if exc.code == 404:
+            logger.warning(
+                "copilot_internal/v2/token returned 404 — "
+                "falling back to direct OAuth token auth. "
+                "(Ensure your GitHub account has an active Copilot subscription.)"
+            )
+        else:
+            body = exc.read().decode(errors="replace")
+            logger.error("Copilot token exchange HTTP %s: %s", exc.code, body[:300])
+            raise RuntimeError(
+                f"GitHub returned HTTP {exc.code} during Copilot token exchange. "
+                "Ensure your account has Copilot access and re-authenticate via "
+                "the sidebar (sign out then sign back in)."
+            )
 
-    token = data.get("token")
-    if not token:
-        raise RuntimeError("Copilot token exchange returned no token: " + str(data))
-
-    # expires_at: "2026-01-01T00:30:00Z"
-    from datetime import datetime, timezone
-    expires_str = data.get("expires_at", "")
-    try:
-        expires_at = datetime.fromisoformat(expires_str.replace("Z", "+00:00")).timestamp()
-    except Exception:
-        expires_at = now + 1740  # 29 min fallback
-
-    _copilot_api_token_cache = {"token": token, "expires_at": expires_at}
-    logger.info("Copilot API token obtained (expires in %.0f s)", expires_at - now)
-    return token
+    # --- Attempt 2: OAuth token directly --------------------------------------
+    # api.githubcopilot.com accepts GitHub OAuth tokens directly (scheme "token").
+    # Cache for 5 min so we retry the internal exchange periodically.
+    _copilot_api_token_cache = {
+        "token": gh_token, "scheme": "token", "expires_at": now + 300}
+    logger.info("Using GitHub OAuth token directly with Copilot API (fallback mode)")
+    return gh_token, "token"
 
 
 def _run_copilot_chat(prompt: str, history: list[dict] | None = None) -> str:
     """Call GitHub Copilot Chat API for the HA conversation agent.
     Uses the OpenAI-compatible endpoint at api.githubcopilot.com.
     `history` is a list of {role, content} dicts for multi-turn context."""
-    token = _get_copilot_api_token()
+    token, scheme = _get_copilot_api_token()
 
     system_msg = {
         "role": "system",
@@ -512,7 +535,7 @@ def _run_copilot_chat(prompt: str, history: list[dict] | None = None) -> str:
         data=payload,
         method="POST",
         headers={
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"{scheme} {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": "ha-mcp-bridge/1.0",
@@ -530,6 +553,10 @@ def _run_copilot_chat(prompt: str, history: list[dict] | None = None) -> str:
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")
         logger.error("Copilot chat API HTTP %s: %s", exc.code, body[:500])
+        if exc.code in (401, 403):
+            # Token rejected — clear cache so next call re-authenticates.
+            global _copilot_api_token_cache
+            _copilot_api_token_cache = {}
         raise RuntimeError(f"Copilot API error {exc.code}: {body[:300]}")
     except Exception as exc:
         logger.exception("Copilot chat API call failed")
