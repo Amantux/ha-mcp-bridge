@@ -217,7 +217,8 @@ def start_auth_login() -> dict:
          "--git-protocol", "https",
          "--scopes",       "copilot",
          "--web"],
-         "--scopes", "copilot",  # request Copilot API access
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         env=_gh_env(), text=True,
     )
     with _auth_lock:
